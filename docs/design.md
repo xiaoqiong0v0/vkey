@@ -1,0 +1,230 @@
+# vkey — 自建 2FA + 虚拟安全密钥（方案草案 v0.1）
+
+> 目标：一套自托管方案，同时提供 **Android 端 2FA(TOTP)** 与 **Linux / Windows 桌面端的 WebAuthn（虚拟 FIDO2 密钥）**，数据全部同步到自己的服务器。
+> 本方案基于 2026-10-26 在 Fedora 44 / Chromium 156 上完成的可行性 spike（结论：**可行**，已实测通过 register + auth）。
+
+---
+
+## 1. 能力矩阵（第一版目标）
+
+| 平台 / 形态 | TOTP 2FA | WebAuthn 凭据（passkey/安全密钥） | 说明 |
+|---|---|---|---|
+| Android (14+) | ✅ | ⏳ 第二阶段 | provider 需 ROM 支持 Credential Manager，国产 ROM 待实测 |
+| Linux (Fedora/Ubuntu) | 备用 | ✅ 主路径 | `uhid` 虚拟 FIDO2 设备（spike 已验证） |
+| Windows 11 24H2+ | 备用 | ✅ 主路径 | 官方 WebAuthn Plugin API（无需模拟 USB） |
+| 任意浏览器（兜底） | — | ✅ 兜底 | 浏览器扩展劫持 `navigator.credentials` |
+| 服务端 | — | — | 单二进制，零知识存储 |
+
+**明确不做**：iOS（需 Apple 特批 entitlement）、手机当 USB 硬件密钥（Android 无公开 HID gadget API）、hybrid 扫码（中转在 Google 手里，国内不可用）、**H5/网页端（不在浏览器里解密或显示 TOTP/私钥）**。
+
+---
+
+## 2. 架构
+
+```
+                 ┌──────────────────────────────┐
+                 │  vkeyd（服务端，单二进制）      │
+                 │  · 账号/设备注册（单用户）      │
+                 │  · 零知识密文条目存储           │
+                 │  · 引导安装包/脚本分发          │
+                 └───────────┬──────────────────┘
+                             │ HTTPS（TLS，可自签或 LE）
+      ┌──────────────┬───────┴────────┬────────────────┐
+      │              │                │                │
+┌─────┴─────┐  ┌─────┴─────┐   ┌──────┴──────┐  ┌──────┴──────┐
+│ Linux     │  │ Windows   │   │ 浏览器扩展   │  │ Android     │
+│ vkey-hid  │  │ vkey-win  │   │ vkey-ext    │  │ vkey-android│
+│ (Rust)    │  │ (Rust/COM)│   │ (TS, MV3)   │  │ (Kotlin)    │
+│ uhid+CTAP2│  │ Plugin API│   │ 页面劫持     │  │ TOTP(+provider)│
+└───────────┘  └───────────┘   └─────────────┘  └─────────────┘
+```
+
+四个客户端**共用**同一份「密文条目格式 + 同步协议」，所以任何一端写入，其它端立即可用。
+
+---
+
+## 3. 对原始设想的修正（重要）
+
+### 3.1 ❌「服务启动后动态生成 Android/Linux/Windows 安装文件」→ ✅「动态生成引导脚本 + 通用安装包」
+
+动态产出各平台安装包代价极高、且不安全：
+
+| 做法 | 代价 | 风险 |
+|---|---|---|
+| 服务端内构建 APK | 需 Android SDK（容器 ~10GB）+ 内置签名 keystore | keystore 放服务端 = 拿到服务器就能伪造你的 APK |
+| 服务端内构建 deb/rpm/msi | 需交叉工具链 | 每次发布都要重跑，构建环境与运行环境耦合 |
+| **引导脚本 + 通用产物** | 服务端只做字符串模板 | 无签名材料、无 SDK |
+
+**推荐设计**：服务端只提供三个**参数化引导端点**，产物是「已经带好你的服务器地址」的安装入口：
+
+```
+GET /install.sh            # curl -fsSL https://<host>/install.sh | bash
+GET /install.ps1           # irm https://<host>/install.ps1 | iex
+GET /pair                 # 手机扫码页（返回一次性配对 token + APK 下载 + 服务器地址）
+GET /dl/<artifact>         # 预构建产物：vkey-hid-linux-x86_64.tar.gz、vkey-win.msi、vkey-ext.zip、vkey-android.apk
+```
+
+脚本逻辑（两端一致）：探测架构 → 下载对应产物 → 写入 `~/.config/vkey/config.toml`（`server_url`、`device_id`、`token`）→ 注册为 systemd user / Windows 服务 → 打印一次配对确认。
+**效果与「动态安装包」完全一致**（用户一条命令装好且已指向你的域名/IP），成本差两个数量级，还顺带解决「域名 or IP 可配置」。
+
+### 3.2 ❌ Android 一上来就做 passkey provider → ✅ 第一版只做 TOTP + 查看/确认
+
+`CredentialProviderService` 在 AOSP 14+ 存在，但国产 ROM（vivo/小米/华为）是否暴露入口、是否允许第三方 provider **未知且不可控**。因此：
+
+- 第一版 Android：TOTP 列表 + 扫码添加 + 与服务器同步 + 「本次登录待确认」的审批页（用作桌面端的 UX 前置，不是硬依赖）
+- 第二阶段：加 `CredentialProviderService`，并以「ROM 支持才启用」为特性开关
+
+### 3.4 ❌ 不做 H5/网页端（2026-10-26 决策）
+
+原因：端到端加密的前提是**私钥只在受信任的客户端解密**。一旦在浏览器里解密主密钥或显示验证码，安全就退化为「信任服务端下发的 JS」——服务端被入侵或供应链污染即可静默窃取主密码与明文，E2EE 形同虚设。附带问题：`localStorage` 中的 token 遇 XSS 直接被偷、DOM 里的 TOTP 明文可被任意扩展读取、`getUserMedia` 在国产浏览器/WebView 支持参差。
+
+**服务端仍然保留的网页**（纯展示，不含任何解密逻辑）：
+
+- `/pair` — 一次性配对码 + Android APK 下载 + 服务器地址
+- `/install.sh` `/install.ps1` — 引导安装脚本
+- `/` — 自检页（服务状态、已注册设备、同步条目数、TLS 有效期）
+
+这三个页面**不接触**主密码、密文解密或验证码生成。
+
+
+### 3.3 ✅ 保留浏览器扩展，但不是主路径
+
+扩展的价值是覆盖「Windows 11 24H2 以下」和「Firefox/其它 Chromium」，以及作为虚拟密钥不可用时的兜底。安全边界需在 UI 明示（扩展 = 软件密钥，低于硬件密钥）。
+
+---
+
+## 4. 服务端设计
+
+### 4.1 语言与形态
+**Go 单二进制**（不选 Rust：交叉编译链路短、部署简单；不选 Node：无运行时依赖）。`sqlite` 默认、`postgres` 可选（环境变量切换）。
+
+### 4.2 数据模型（零知识）
+
+```
+users(id, username, verifier, kdf_salt, created_at)          -- verifier = Argon2id(master_pw) 派生出的登录校验值
+devices(id, user_id, name, platform, pubkey_ed25519, created_at, last_seen)
+items(id, user_id, kind, rp_id, ciphertext, nonce, version, updated_at, deleted_at)
+  kind ∈ {totp, webauthn}
+  ciphertext = AES-256-GCM(item_key, {secret | private_key, user_handle, sign_count, rp_id, username})
+audit(id, user_id, device_id, action, ts)                    -- 仅元数据，不含明文
+```
+
+- 主密钥：`master_key = Argon2id(master_pw, kdf_salt)`，**永不上传**；`verifier` 用于登录校验（不可逆推出主密钥）
+- 服务端只见密文；`rp_id` 明文保留用于检索/去重（可接受，或改为 HMAC(rp_id) 盲索引）
+- **冲突策略**：`version` 单调递增，LWW（last-write-wins）+ 冲突留副本，UI 提示
+
+### 4.3 API（最小集）
+
+```
+POST /api/v1/auth/token          {username, verifier}        -> {token, kdf_salt}
+GET  /api/v1/items?since=<ver>                                -> [{id, kind, rp_id, ct, version}]
+POST /api/v1/items                                            {id, kind, rp_id, ct, version}
+POST /api/v1/devices/register     {name, platform, pubkey}    -> {device_id}
+POST /api/v1/pair                 (一次性配对码，用于手机/新机器)
+GET  /api/v1/health
+```
+
+鉴权：device token（`Authorization: Bearer`）+ 设备公钥签名（防 token 泄漏后直接拉库）。
+
+---
+
+## 5. 各端实现要点
+
+### 5.1 Linux（Rust + uhid）— spike 已验证
+- 复用 spike 结论，**10 个坑必须内化**（见 §8）
+- 架构：`vkey-hid`（systemd user service）→ `/dev/uhid` 虚拟设备 → 每次 CTAP2 请求时从**本地加密缓存**读私钥解密签名，签名后立即清零
+- 权限：udev 规则给 `uinput`/`uhid`/`hidraw` 授权（`uaccess` 或固定 group），**避免要求 root 常驻**
+- 未解决：`rk:true` 时 Chrome 的 UV 语义（见 §7），第一版不声明 rk
+
+### 5.2 Windows（Rust + WebAuthn Plugin API）— 需验证
+- Windows 11 24H2+ 官方 `webauthnplugin.h`：注册 COM `IPluginAuthenticator`，UV 走 Windows Hello（体验最好）
+- Win10/11 老版本：退回浏览器扩展
+- 需代码签名证书（否则 SmartScreen 拦截）；可先自签 + 文档说明
+
+### 5.3 浏览器扩展（TypeScript, MV3）
+- 页面主世界脚本劫持 `navigator.credentials.create/get`（Bitwarden 同法，已取证）
+- 与本地 daemon 通信：`nativeMessaging`（扩展 ↔ `vkey-hid`/`vkey-win`）；没装 daemon 时直接走服务器（能力受限）
+- 风险：站点隔离/CSP；需准备「复制一次性验证码」降级
+
+### 5.4 Android（Kotlin + Compose）
+- 第一版：TOTP（RFC 6238）、扫码导入、E2EE 同步、生物识别解锁
+- 第二阶段：`CredentialProviderService`（API 34+），启动时探测 ROM 是否支持，不支持则隐藏该功能
+- 第三阶段（可选）：蓝牙 HID 键盘自动输码（免谷歌、免插件）
+
+---
+
+## 6. 一站式交付（对应你的「自定义服务」诉求）
+
+服务器启动后（首次 `vkeyd init --domain <域名|IP>` 或环境变量），自动生成：
+
+1. `https://<host>/install.sh` / `install.ps1` — 带 `server_url` 的引导脚本
+2. `https://<host>/pair` — 手机扫码页：一次性配对码 + APK 下载 + 指纹校验
+3. `https://<host>/` — 自检页：显示服务状态、已注册设备、同步条目数、TLS 有效期
+4. TLS：内置 ACME（Let's Encrypt）或 `--self-signed`（IP 场景，附 CA 导出说明）
+
+「域名或 IP」两种模式都要支持：IP 模式走自签 CA + 引导脚本自动安装根证书（Windows 用 `certutil -addstore`，Linux 用 `update-ca-certificates`）。
+
+---
+
+## 7. 已知风险与缓解
+
+| 风险 | 影响 | 缓解 |
+|---|---|---|
+| `rk:true` + RP 要 residentKey → Chrome 静默等待超时（spike 实测） | 无法做无用户名 passkey | 第一版不声明 rk；二期研究 UV/`makeCredUvNotRqd` 语义 |
+| 虚拟密钥 = 软件密钥，本机恶意进程可调用 | 安全等级低于 YubiKey | UI 明示；私钥仅在签名瞬间解密；可选「每次确认」（polkit/Hello） |
+| 国产 ROM 不暴露 Credential Manager | Android passkey 不可用 | 特性开关 + 文档；TOTP 不受影响 |
+| 扩展劫持遇 CSP/站点隔离 | 个别站点不可用 | 降级到「一次性验证码复制」 |
+| 主密码丢失 | 数据永久不可解 | 恢复码（BIP39 风格）+ 导出加密备份 |
+| Windows 代码签名 | SmartScreen 拦截 | 先提供自签 + 校验哈希；有证书后补签 |
+
+---
+
+## 8. spike 已确认的 10 个 CTAP2 实现坑（实现时必须内化）
+
+1. `uhid_output_req.rtype` 是 **HID 报表类型**（1=output），不是 0
+2. 无 report ID 的设备，Chrome 写 **65 字节**（`0x00` + 64 字节帧），必须剥前缀
+3. CBOR `true/false` = `0xF5/0xF4`（写成 `0x15/0x14` 变成整数 21/20）
+4. `getInfo.versions` 必须是 **array**
+5. **`clientPin:false` 表示「支持但未设 PIN」**，会强制要求 `pinUvAuthProtocols`；不打算支持 PIN 就**不要声明**
+6. 每次 INIT 必须分配**唯一 CID**（Chrome 同时开多个 handle）
+7. CTAP2.1 需实现 **`authenticatorSelection(0x0B)`**（Chrome 的 GetTouch），否则停在「插入并轻触」
+8. 声明 **`rk:true`** 且 RP 请求 residentKey → Chrome 静默超时
+9. ES256 签名必须是 **DER**（不是 raw r‖s）
+10. CTAP2 错误应答只能是**单个状态字节**
+
+---
+
+## 9. 里程碑
+
+| 阶段 | 内容 | 验收 |
+|---|---|---|
+| M0 ✅ | Linux uhid 虚拟密钥 spike | Chromium register+auth 成功（已完成） |
+| M1 | 服务端 vkeyd（账号/同步/引导脚本）+ Linux daemon 持久化 | 两台 Linux 机器共享同一份 passkey |
+| M2 | 浏览器扩展（兜底）+ Windows Plugin API PoC | Win11 下 Chrome 可直接用 |
+| M3 | Android TOTP 端 + 扫码配对 | 手机加码桌面可见 |
+| M4 | 打包交付：install.sh / install.ps1 / pair 页 / TLS | 新机器一条命令接入 |
+| M5（可选） | Android CredentialProviderService、蓝牙 HID 输码 | ROM 支持时启用 |
+
+---
+
+## 10. 目录结构（本仓）
+
+```
+vkey/
+├── docs/                # 本方案、CTAP2 笔记、证据
+├── server/              # Go 单二进制（vkeyd）
+├── linux/               # Rust daemon（uhid + CTAP2）
+├── windows/             # Rust/C++ Plugin API 实现
+├── extension/           # TypeScript MV3 扩展
+├── android/             # Kotlin app
+├── shared/              # 协议/密文格式定义（JSON schema + 测试向量）
+└── spike/               # 已完成的可行性验证（保留为参考实现 + 回归测试）
+```
+
+---
+
+## 11. 待你决策（开工前）
+
+1. **项目名**：暂定 `vkey`（可换）
+2. **服务端语言**：建议 Go；若你更熟 Rust/Node 可改
+3. **第一版是否只做「Linux + 服务端」**，Windows/Android 依次跟进（建议这样，最快形成闭环）

@@ -1,0 +1,51 @@
+# ---- 本地工作区 / 一次性产物 ----
+.tmp/
+.io/
+*.log
+
+# ---- 凭据 / 本地配置 ----
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+!**/testdata/**/*.key
+local.properties
+
+# ---- Python（spike 脚本）----
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# ---- Go（服务端）----
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+
+# ---- Rust（Linux/Windows 客户端）----
+target/
+
+# ---- Node / 浏览器扩展 ----
+node_modules/
+dist/
+*.tsbuildinfo
+coverage/
+
+# ---- Android ----
+.gradle/
+build/
+captures/
+*.apk
+*.aab
+*.jks
+*.keystore
+
+# ---- IDE / OS ----
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

@@ -1,0 +1,420 @@
+addresses.
+   The transports that FIDO has defined are thus USB, NFC, and BLE.
+   11.5. Hybrid transports
+   Hybrid transports decouple the proof that the client platform is physically close to the authenticator or credential provider hosting device (CPHD), from the transport of CTAP2 messages between them. The hybrid transport defined here is intended to connect authenticators with cameras, typically phones, to a client platform. It involves both network communication via a service called a tunnel service, and BLE transmissions to show proximity. A tunnel service is a high-availability network service with a domain name known to the authenticators that use it.
+   11.5.1. QR-initiated Transactions
+   When the client platform wishes to communicate with a hybrid authenticator it may display a QR code that contains a public key and a shared secret key. The public key authenticates the client platform to any connecting authenticator and knowledge of the secret key authenticates the connecting authenticator to the client platform.
+var (
+  qrSecret [16]byte
+  // The ecdsa package is used for its convenient public/private key structures,
+  // but these are ECDH keys, not ECDSA.
+  identityKey *ecdsa.PrivateKey
+)
+
+func showQRCode() {
+  rand.Reader.Read(qrSecret[:])
+
+  var err error
+  identityKey, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+  if err != nil {
+    panic(err)
+  }
+  identityKeyCompressed := compressECKey(&identityKey.PublicKey)
+
+  printQRCode(encodeQRContents(&identityKeyCompressed, &qrSecret))
+}
+
+   The contents of the QR code are a URI of the form FIDO:/ followed by digit-encoded data. The scheme is written in uppercase because this is more efficient in QR codes. A single foreslash follows the colon because that is required for some devices to recognise the QR contents as a URI, but it’s not a double-slash as that would indicate an authority, which this URI scheme does not use.
+   The encoded data is a CBOR map with integer keys mapping to key-specific values. The CBOR must be in canonical form. The keys are:
+   
+    
+     Key 0: a 33-byte, P-256, X9.62, compressed public key.
+    
+     Key 1: a 16-byte random QR secret.
+    
+     Key 2: the number of assigned tunnel server domains known to this implementation (see decodeTunnelServerDomain for details).
+    
+     Key 3: (optional) the current time in epoch seconds.
+    
+     Key 4: (optional) a boolean that is true if the device displaying the QR code can perform state-assisted transactions.
+    
+     Key 5: a value from the table below, representing the user flow to follow. Implementations SHOULD treat unknown values as ga. This field exists so that guidance can be given to the user immediately upon scanning the QR code, prior to the credential provider hosting device/authenticator receiving any CTAP message or JSON request. While this hint SHOULD be as accurate as possible, it does not constrain the subsequent CTAP messages or JSON requests that the platform may send.
+   
+   
+    
+     
+      Value
+      Description
+    
+     
+      ga
+      getAssertion (FIDO2)
+     
+      mc
+      makeCredential (FIDO2)
+     
+      dcp
+      credential presentation (Digital Credentials API)
+     
+      dci
+      credential issuance (Digital Credentials API)
+   
+   (More fields can be added in the future as they will be ignored by older implementations.)
+func encodeQRContents(compressedPublicKey *[33]byte, qrSecret *[16]byte) string {
+  numMapElements := 6
+  // GREASE QR code to ensure that keys can be added later.
+  var randByte [1]byte
+  rand.Reader.Read(randByte[:])
+  extraKey := randByte[0]&3 == 0
+  if extraKey {
+    numMapElements++
+  }
+
+  var cbor []byte
+  cbor = append(cbor, 0xa0+byte(numMapElements))       // CBOR map
+  cbor = append(cbor, 0)                               // key 0
+  cbor = append(cbor, (cborMajorByteString<<5)|24, 33) // 33 bytes
+  cbor = append(cbor, compressedPublicKey[:]...)
+  cbor = append(cbor, 1)                           // key 1
+  cbor = append(cbor, (cborMajorByteString<<5)|16) // 16 bytes
+  cbor = append(cbor, qrSecret[:]...)
+
+  cbor = append(cbor, 2) // key 2
+  n := len(assignedTunnelServerDomains)
+  if n > 24 {
+    panic("larger encoding needed")
+  }
+  cbor = append(cbor, byte(n))
+
+  cbor = append(cbor, 3) // key 3
+  cbor = append(cbor, cborEncodeInt64(time.Now().Unix())...)
+
+  cbor = append(cbor, 4) // key 4
+  cbor = append(cbor, 0xf5)  // true
+
+  cbor = append(cbor, 5) // key 5
+  cbor = append(cbor, (cborMajorByteString<<5)|2, 'm', 'c')
+
+  if extraKey {
+    cbor = append(cbor, 0x19, 0xff, 0xff, 0) // key 65535, value 0
+  }
+
+  qr := "FIDO:/" + digitEncode(cbor)
+  fmt.Println(qr)
+  return qr
+}
+
+   Authenticators must use a CBOR parser to parse this information as more keys may be added in the future. The function above uses some [rfc8701] to try and ensure this.
+   The encoding is designed to be efficient when expressed in a QR code. Seven-byte chunks are interpreted as little-endian values and encoded as 17-digit, base 10 numbers. Any remaining bytes are encoded likewise using the minimum number of digits that some value of that number of bytes could need. Specifically, since the remainder is known to be 1, 2, 3, 4, 5, or 6 bytes long, its encoded form will take 3, 5, 8, 10, 13, or 15 digits, respectively.
+func digitEncode(d []byte) string {
+  const chunkSize = 7
+  const chunkDigits = 17
+  const zeros = "00000000000000000"
+
+  var ret string
+  for len(d) >= chunkSize {
+    var chunk [8]byte
+    copy(chunk[:], d[:chunkSize])
+    v := strconv.FormatUint(binary.LittleEndian.Uint64(chunk[:]), 10)
+    ret += zeros[:chunkDigits-len(v)]
+    ret += v
+
+    d = d[chunkSize:]
+  }
+
+  if len(d) != 0 {
+    // partialChunkDigits is the number of digits needed to encode
+    // each length of trailing data from 6 bytes down to zero. I.e.
+    // it's 15, 13, 10, 8, 5, 3, 0 written in hex.
+    const partialChunkDigits = 0x0fda8530
+
+    digits := 15 & (partialChunkDigits >> (4 * len(d)))
+    var chunk [8]byte
+    copy(chunk[:], d)
+    v := strconv.FormatUint(binary.LittleEndian.Uint64(chunk[:]), 10)
+    ret += zeros[:digits-len(v)]
+    ret += v
+  }
+
+  return ret
+}
+
+   Once the QR code has been displayed the client platform awaits a connection attempt from an authenticator. This transport requires a proof of proximity to help prevent attacks, thus notification of the connection attempt comes in the form of a BLE advertisement. (Without a proof of proximity a web site could, for example, display a QR code and attempt to convince the user to scan it with their authenticator. By having the authenticator demand that the client platform prove reception of a BLE advert such an attacker would have to have control of a Bluetooth radio near to the victim.)
+   The UUID, 0000fff9-0000-1000-8000-00805f9b34fb, must be included in the advert and client platforms must require that candidate devices are advertising this UUID. That UUID must also have a 20-byte service data payload which is trial decrypted to search for a match to the displayed QR code.
+func awaitAdvert(eidKey [64]byte) [16]byte {
+  // uuidsChan is a channel of UUID sets observed from some BLE device.
+  // Each UUID is represented as a string in the standard format, e.g.
+  // 0000fde2-0000-1000-8000-00805f9b34fb.
+  var (
+    serviceDataChan chan map[string][]byte
+    stopScanning    func()
+    err             error
+  )
+
+  if serviceDataChan, stopScanning, err = bleScanForServiceData(); err != nil {
+    panic(err)
+  }
+  defer stopScanning()
+
+  const UUID = "0000fff9-0000-1000-8000-00805f9b34fb"
+
+  for serviceData := range serviceDataChan {
+    cableData, ok := serviceData\[UUID]
+    if !ok {
+      continue
+    }
+
+    if payload, ok := trialDecrypt(&eidKey, cableData); ok {
+      return payload
+    }
+  }
+
+  panic("UUID channel closed")
+}
+
+   In order to derive the key needed to trial decrypt BLE adverts, the following key derivation is used. Whenever a key is needed for a specific purpose it is always derived from a parent key in order to ensure domain separation. The derivation uses [RFC5869] with SHA-256, where the input keying material is the parent key, the salt is an optional input, and the info value is a 32-bit, little-endian, purpose identifier.
+type keyPurpose uint32
+
+const (
+  keyPurposeEIDKey   keyPurpose = 1
+  keyPurposeTunnelID keyPurpose = 2
+  keyPurposePSK      keyPurpose = 3
+)
+
+func derive(output, secret, salt []byte, purpose keyPurpose) {
+  if uint32(purpose) >= 0x100 {
+    panic("unsupported purpose")
+  }
+
+  var purpose32 [4]byte
+  purpose32[0] = byte(purpose)
+
+  h := hkdf.New(sha256.New, secret, salt, purpose32[:])
+  if n, err := h.Read(output); err != nil || n != len(output) {
+    panic("HKDF error")
+  }
+}
+
+   The key used to decrypt adverts is then a 64-byte value derived from the QR secret with keyPurposeEIDKey. The term “EID” is historical and does not stand for anything here.
+func awaitQRAdvert() [16]byte {
+  var eidKey [32 + 32]byte
+  derive(eidKey[:], qrSecret[:], nil, keyPurposeEIDKey)
+  return awaitAdvert(eidKey)
+}
+
+   When decrypting adverts, these 64 bytes of EID key are considered as a pair of 256-bit keys where the first 32 bytes are an AES key and the second 32 bytes are an HMAC-SHA256 key. A candidate BLE advert is valid if the final four bytes are a correct HMAC tag of the other 16 bytes. For each valid BLE advert, those initial 16 bytes are then taken to be an AES block and decrypted with the AES key.
+   This is a poor-man’s substitute for a wide-block mode, but wide-block modes are non-standard. There is no more space in the BLE advert so a nonce cannot be included. Since it’s possible that two authenticators could scan the same QR code and broadcast based on the same key, avoiding a mode that XORs plaintext with a keystream avoids potential complications.
+func trialDecrypt(eidKey *[64]byte, candidateAdvert []byte) (plaintext [16]byte, ok bool) {
+  var zeros [16]byte
+  if len(candidateAdvert) != 20 {
+    return zeros, false
+  }
+
+  h := hmac.New(sha256.New, eidKey[32:])
+  h.Write(candidateAdvert[:16])
+  expectedTag := h.Sum(nil)
+
+  if !hmac.Equal(expectedTag[:4], candidateAdvert[16:]) {
+    return zeros, false
+  }
+
+  block, err := aes.NewCipher(eidKey[:32])
+  if err != nil {
+    panic(err)
+  }
+
+  block.Decrypt(plaintext[:], candidateAdvert[:16])
+  if !reservedBitsAreZero(plaintext) {
+    return zeros, false
+  }
+
+  return plaintext, true
+}
+
+   Once successfully authenticated and decrypted, a BLE advert yields 16 bytes of plaintext. These 16 bytes consist of (in order):
+   
+    
+     A flags byte, which is currently zero. This could be used for versioning in the future.
+    
+     80 bits of connection nonce.
+    
+     A 24-bit routing ID.
+    
+     A 16-bit tunnel service identifier.
+   
+func reservedBitsAreZero(plaintext [16]byte) bool {
+  return plaintext[0] == 0
+}
+
+func unpackDecryptedAdvert(plaintext [16]byte) (
+  nonce [10]byte,
+  routingID [3]byte,
+  encodedTunnelServerDomain uint16) {
+
+  copy(nonce[:], plaintext[1:])
+  copy(routingID[:], plaintext[11:])
+  encodedTunnelServerDomain = uint16(plaintext[14]) | (uint16(plaintext[15]) << 8)
+  return
+}
+
+   The connection nonce is the value that demonstrates possession of the BLE advert, and thus proximity to the authenticator.
+   The tunnel service relays messages to and from the authenticator. It is a property of the authenticator because, as detailed later, it can contact the authenticator on request when a client platform is “linked”. The protocol between the authenticator and the tunnel service, and details about how the service later contacts the authenticator, are a private detail of the authenticator’s implementation.
+   The encoded tunnel service identifier is a uint16. Values zero through 255 are assigned, and values >= 256 are translated into a domain name by hashing. A “cable” label is prepended to hashed domains to allow for use of CNAME records.
+   Domains are assigned sequentially and the number of assigned domains is included in the QR code. Therefore authenticators can know whether a peer will recognise an assigned domain or not and can potentially fall back to a hashed domain for compatibility.
+   These are the currently assigned domains, in order:
+var assignedTunnelServerDomains = []string{"cable.ua5v.com", "cable.auth.com"}
+
+func decodeTunnelServerDomain(encoded uint16) (string, bool) {
+  if encoded < 256 {
+    if int(encoded) >= len(assignedTunnelServerDomains) {
+      return "", false
+    }
+    return assignedTunnelServerDomains[encoded], true
+  }
+
+  shaInput := []byte{
+    0x63, 0x61, 0x42, 0x4c, 0x45, 0x76, 0x32, 0x20,
+    0x74, 0x75, 0x6e, 0x6e, 0x65, 0x6c, 0x20, 0x73,
+    0x65, 0x72, 0x76, 0x65, 0x72, 0x20, 0x64, 0x6f,
+    0x6d, 0x61, 0x69, 0x6e,
+  }
+  shaInput = append(shaInput, byte(encoded), byte(encoded>>8), 0)
+  digest := sha256.Sum256(shaInput)
+
+  v := binary.LittleEndian.Uint64(digest[:8])
+  tldIndex := uint(v & 3)
+  v >>= 2
+
+  ret := "cable."
+  const base32Chars = "abcdefghijklmnopqrstuvwxyz234567"
+  for v != 0 {
+    ret += string(base32Chars[v&31])
+    v >>= 5
+  }
+
+  tlds := []string{".com", ".org", ".net", ".info"}
+  ret += tlds[tldIndex&3]
+
+  return ret, true
+}
+
+   The routing ID is an opaque value that must be provided to the tunnel service and which aids its operation.
+   The client platform is now in possession of everything needed to establish the tunnel to the authenticator. The first step of doing so is to derive the tunnel ID, a 128-bit identifier that the tunnel service recognises and which identifies the exchange separate from any others that the tunnel service might concurrently be facilitating. It is derived, as detailed above, from the QR secret. It is not dependent on the nonce from the BLE advert because that would mean that the tunnel service could try and brute-force the nonce from the tunnel ID. The tunnel service is trusted by the authenticator, but no need to trust it more than necessary.
+   With the tunnel ID in hand, the tunnel service is contacted via WebSockets. In order to request a connection to a given tunnel ID, the path of the WebSockets URL is set to /cable/connect/ followed by the lower-case, hex-encoded routing ID, another foreslash, then the lower-case, hex-encoded tunnel ID. The WebSocket connection must set the subprotocol identifier to fido.cable.
+   Implementations must follow HTTP redirects when establishing the WebSocket connection.
+var tunnelServerDomain string
+
+const subprotocol = "fido.cable"
+
+func connectToPhone(advertPlaintext [16]byte) {
+  _, routingID, encodedTunnelServerDomain := unpackDecryptedAdvert(advertPlaintext)
+
+  var ok bool
+  if tunnelServerDomain, ok = decodeTunnelServerDomain(encodedTunnelServerDomain); !ok {
+    panic("unknown tunnel server domain")
+  }
+
+  var tunnelID [16]byte
+  derive(tunnelID[:], qrSecret[:], nil, keyPurposeTunnelID)
+
+  connectURL := "wss://" +
+    tunnelServerDomain +
+    "/cable/connect/" +
+    hex.EncodeToString(routingID[:]) +
+    "/" +
+    hex.EncodeToString(tunnelID[:])
+
+  conn, _, err := (&websocket.Dialer{
+    Subprotocols: []string{subprotocol},
+  }).Dial(connectURL, nil)
+
+  if err != nil {
+    panic(err)
+  }
+
+  if conn.Subprotocol() != subprotocol {
+    panic("tunnel service picked wrong subprotocol")
+  }
+
+  doQRHandshake(conn, advertPlaintext)
+}
+
+   With the tunnel established, messages are exchanged in binary WebSocket frames and no other frame types are permitted on the connection. The authenticator and client platform first perform a cryptographic handshake to establish a forward-secure, authenticated connection. This handshake is Noise KNpsk0 using P-256, SHA-256, and AES-256-GCM.
+   The client platform speaks first to prove possession of the BLE advert. The authenticator thus needs only to receive the client platform’s handshake message and send a reply in order to complete the handshake. The KNpsk0 pattern requires that the initiator (the client platform) have shared a public key in advance with the responder (the authenticator), and that both sides share a symmetric key. The pre-exchanged public key was passed to the authenticator in the QR code, and the pre-shared symmetric key is derived from the QR secret and decrypted BLE advert. (The full BLE advert is included in the PSK derivation to ensure that any future additions to the advert format are automatically authenticated.)
+func doQRHandshake(websocketConn *websocket.Conn, advertPlaintext [16]byte) {
+  var psk [32]byte
+  derive(psk[:], qrSecret[:], advertPlaintext[:], keyPurposePSK)
+
+  conn, handshakeHash := doHandshake(websocketConn, psk, identityKey, nil)
+  readPostHandshakeMessage(conn, handshakeHash)
+}
+
+func doHandshake(websocketConn *websocket.Conn,
+  psk [32]byte,
+  identityKey *ecdsa.PrivateKey,
+  // peerIdentity is not used until linked connections are discussed, below.
+  peerIdentity *ecdsa.PublicKey) (
+
+  conn io.ReadWriteCloser,
+  handshakeHash [32]byte) {
+
+  msg, ephemeralKey, noiseState := initialHandshakeMessage(psk, identityKey, peerIdentity)
+  if err := websocketConn.WriteMessage(websocket.BinaryMessage, msg); err != nil {
+    panic(err)
+  }
+
+  msgType, handshakeMessageFromPhone, err := websocketConn.ReadMessage()
+  if err != nil {
+    panic(err)
+  }
+  if msgType != websocket.BinaryMessage {
+    panic("non-binary message received on WebSocket")
+  }
+
+  trafficKeys, handshakeHash := processHandshakeResponse(
+    handshakeMessageFromPhone, ephemeralKey, identityKey, noiseState)
+
+  conn = newCableConn(&websocketAdaptor{websocketConn}, trafficKeys)
+  return conn, handshakeHash
+}
+
+   As referenced above, the handshake itself is Noise NKpsk0. The following functions implement both NKpsk0 and KNpsk0 because the latter will be needed below. The underlying Noise operations are specified in the Noise specification.
+p256X962Length is the length of an uncompressed, X9.62, P-256 point, in bytes.
+const p256X962Length = 1 + 32 + 32
+
+func initialHandshakeMessage(
+  psk [32]byte,
+  priv *ecdsa.PrivateKey,
+  peerPub *ecdsa.PublicKey) (
+
+  msg []byte,
+  ephemeralKey *ecdsa.PrivateKey,
+  noise *noiseState) {
+
+  if (priv == nil) == (peerPub == nil) {
+    panic("exactly one of priv and peerPub must be given")
+  }
+
+  var ns *noiseState
+  if peerPub != nil {
+    ns = newNoise(noiseNKpsk0)
+    ns.mixHash([]byte{0})
+    ns.mixHashPoint(peerPub)
+  } else {
+    ns = newNoise(noiseKNpsk0)
+    ns.mixHash([]byte{1})
+    ns.mixHashPoint(&priv.PublicKey)
+  }
+
+  ns.mixKeyAndHash(psk[:])
+
+  ephemeralKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+  if err != nil {
+    panic(err)
+  }
+
+  ephemeralKeyBytes := elliptic.Marshal(ephemeralKey.Curve, ephemeralKey.X, ephemeralKey.Y)
+  ns.mixHash(ephemeralKeyBytes)
+  ns.mixKey(ephemeralKeyBytes)
+
+  if peerPub != nil {

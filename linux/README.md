@@ -26,7 +26,9 @@ linux/
 ├── packaging/
 │   ├── 99-vkey-uhid.rules      # udev 放行 uhid/hidraw
 │   └── vkey-hid.service        # systemd **user** unit
-└── scripts/dev-sync-fedora.sh  # rsync + 远端 cargo test
+└── scripts/
+    ├── build-artifacts.sh      # 发布产物（tar.gz + SHA256SUMS）
+    └── dev-sync-fedora.sh      # rsync + 远端 cargo test
 ```
 
 ## 构建
@@ -42,6 +44,16 @@ cargo test
 Windows 上同样可以 `cargo build` / `cargo test`：`uhid` 模块用
 `#[cfg(target_os = "linux")]` 隔离，Windows 下 `run` 会明确报错，其余命令
 （login/pair/sync/status/selftest）可用。
+
+### 发布产物
+
+```bash
+linux/scripts/build-artifacts.sh                        # 输出到 <仓库根>/dist
+linux/scripts/build-artifacts.sh --dist-dir /tmp/vk     # 自定义输出目录（或 VKEY_DIST_DIR）
+```
+
+产物为 `vkey-hid-linux-<arch>.tar.gz` 与 `SHA256SUMS`；脚本结束时会打印产物目录的
+**绝对路径**。路径默认值即脚本所在 crate 根的父级 `<仓库根>/dist`（`linux/../dist`）。
 
 ## 安装（Linux）
 

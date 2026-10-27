@@ -81,6 +81,21 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" ./cmd/
 ARM64 把 `GOARCH` 换成 `arm64`。`CGO_ENABLED=0` 是必须的（`modernc.org/sqlite` 为纯 Go，
 开启 CGO 反而会引入 glibc 依赖，破坏可移植性）。产物部署到 `~/work/vkey/bin/vkeyd`。
 
+### 客户端产物分发（`/dl/*`）
+
+`vkeyd serve --artifacts-dir <dir>`（默认 `./artifacts`）把该目录作为**只读**产物源：
+`GET /dl/{name}` 只放行 `<dir>/SHA256SUMS` 里列出的文件名（名字须匹配 `^[A-Za-z0-9._-]+$`），
+`GET /dl/SHA256SUMS` 返回清单本身；目录不存在时只有 `/dl/*` 返回 404，其它接口不受影响。
+
+Linux 产物由 `linux/scripts/build-artifacts.sh` 在 Linux 上构建（本机不执行）：
+
+```bash
+bash linux/scripts/build-artifacts.sh     # 产出 dist/vkey-hid-linux-<arch>.tar.gz + dist/SHA256SUMS
+```
+
+把 `dist/` 整体同步到服务端的 `artifacts/` 目录后，`/install.sh` 会按 `SHA256SUMS` 校验并安装。
+
+
 ## 部署（ECS）
 
 目标与实际部署一致——主机 `ecs-user@47.97.78.223`，域名 `vkey.xiaoqiong0v0.cn`，
@@ -169,7 +184,7 @@ vkeyd 只监听 `127.0.0.1:3150`，TLS 由 nginx 终止（实测 nginx/1.18.0）
   服务端仍然无法解密任何数据。
 - **审计表**只记录元数据（动作、设备、时间），不含明文/密文。
 - `GET /`、`/pair`、`/install.sh`、`/install.ps1` 均为纯展示/模板，不含解密逻辑；
-  产物下载路径是占位，M1 未提供实际文件。
+  `/dl/*` 只做白名单静态分发（白名单来自产物目录的 `SHA256SUMS`）。
 - 速率限制为进程内固定窗口（60 次/分钟/IP，作用于 `auth/token` 与 `pair/claim`），
   重启清零；多实例部署需上移到 nginx。
 
@@ -177,6 +192,6 @@ vkeyd 只监听 `127.0.0.1:3150`，TLS 由 nginx 终止（实测 nginx/1.18.0）
 
 - 仅单账号（`users` 表可容纳多行，但 CLI 与策略只操作最早创建的账号）。
 - 无 TLS/ACME 内置实现（由 nginx + certbot 承担）。
-- 无 `/dl/*` 实际产物、无 APK/MSI 构建。
+- 无 APK/MSI 构建（Linux 的 `.tar.gz` 由 `linux/scripts/build-artifacts.sh` 产出）。
 - 冲突副本 `item_conflicts` 只落库，暂无查询 API（运维可直接查 sqlite）。
 - sqlite 单连接串行；详见 `ASYNC.md` 的边界说明。

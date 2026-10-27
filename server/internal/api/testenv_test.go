@@ -52,6 +52,12 @@ func newEnv(t *testing.T) *env {
 // newEnvAt 与 newEnv 相同，但可注入固定时钟（用于时间窗边界测试）。
 func newEnvAt(t *testing.T, now func() time.Time) *env {
 	t.Helper()
+	return newEnvOpts(t, func(o *api.Options) { o.Now = now })
+}
+
+// newEnvOpts 与 newEnv 相同，但允许测试覆盖 Options（如产物目录）。
+func newEnvOpts(t *testing.T, mutate func(*api.Options)) *env {
+	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), "vkey.db"))
 	if err != nil {
 		t.Fatalf("打开测试库失败: %v", err)
@@ -74,12 +80,15 @@ func newEnvAt(t *testing.T, now func() time.Time) *env {
 		t.Fatalf("读取用户失败: %v", err)
 	}
 
-	handler := api.New(st, api.Options{
+	opts := api.Options{
 		Domain:  "https://vkey.test",
 		Version: "test",
-		Now:     now,
 		Logger:  log.New(io.Discard, "", 0),
-	}).Handler()
+	}
+	if mutate != nil {
+		mutate(&opts)
+	}
+	handler := api.New(st, opts).Handler()
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 

@@ -56,7 +56,7 @@ func TestWebPages(t *testing.T) {
 	}{
 		{"/", []string{"vkey 服务端自检", "https://vkey.test", "不生成验证码"}},
 		{"/pair", []string{"vkey 设备配对", "https://vkey.test", "/dl/vkey-android.apk"}},
-		{"/install.sh", []string{`SERVER_URL="https://vkey.test"`, "uname -m", "/dl/vkey-hid-linux-"}},
+		{"/install.sh", []string{`SERVER_URL="https://vkey.test"`, "uname -m", "vkey-hid-linux-${ARCH}.tar.gz"}},
 		{"/install.ps1", []string{`$ServerUrl = "https://vkey.test"`, "PROCESSOR_ARCHITECTURE", "/dl/vkey-win-"}},
 	}
 	for _, c := range checks {

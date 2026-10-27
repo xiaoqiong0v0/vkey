@@ -3,7 +3,7 @@
 // 子命令：
 //
 //	vkeyd init   --db <path> [--username default] [--master-key <base32>]
-//	vkeyd serve  --db <path> --listen :8080 [--domain <域名>] [--set-require-master-pw=true|false]
+//	vkeyd serve  --db <path> --listen :8080 [--domain <域名>] [--artifacts-dir <dir>] [--set-require-master-pw=true|false]
 //	vkeyd policy set --db <path> --require-master-pw=<bool>
 package main
 
@@ -132,6 +132,7 @@ func runServe(args []string) error {
 	dbPath := fs.String("db", "", "sqlite 数据库路径（必填）")
 	listen := fs.String("listen", ":8080", "监听地址")
 	domain := fs.String("domain", "", "对外域名（用于生成引导脚本；缺省按请求 Host 推导）")
+	artifactsDir := fs.String("artifacts-dir", "./artifacts", "产物目录（只读；/dl/* 白名单来自其中的 SHA256SUMS）")
 	setRequire := fs.String("set-require-master-pw", "", "启动时设置策略：true|false（缺省不修改）")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -161,9 +162,10 @@ func runServe(args []string) error {
 
 	logger := log.New(os.Stderr, "vkeyd ", log.LstdFlags|log.LUTC)
 	handler := api.New(st, api.Options{
-		Domain:  *domain,
-		Version: version.Version,
-		Logger:  logger,
+		Domain:       *domain,
+		Version:      version.Version,
+		ArtifactsDir: *artifactsDir,
+		Logger:       logger,
 	}).Handler()
 
 	srv := &http.Server{
@@ -252,7 +254,7 @@ func usage(w *os.File) {
 
 用法：
   vkeyd init   --db <path> [--username default] [--master-key <base32>]
-  vkeyd serve  --db <path> --listen :8080 [--domain <域名>] [--set-require-master-pw=true|false]
+  vkeyd serve  --db <path> --listen :8080 [--domain <域名>] [--artifacts-dir <dir>] [--set-require-master-pw=true|false]
   vkeyd policy set --db <path> --require-master-pw=<bool>
 
 说明：

@@ -27,6 +27,9 @@ type Options struct {
 	Domain string
 	// Version 是 /health 与自检页展示的版本号。
 	Version string
+	// ArtifactsDir 是 /dl/* 的只读产物目录（白名单来自其中的 SHA256SUMS）。
+	// 空值等价于 "./artifacts"。
+	ArtifactsDir string
 	// Now 是时钟注入点，nil 时使用 time.Now（测试用）。
 	Now func() time.Time
 	// Logger 是访问日志输出，nil 时使用 log.Default()。
@@ -52,6 +55,9 @@ func New(st *store.Store, opts Options) *Server {
 	}
 	if opts.Version == "" {
 		opts.Version = "dev"
+	}
+	if opts.ArtifactsDir == "" {
+		opts.ArtifactsDir = defaultArtifactsDir
 	}
 	if opts.Logger == nil {
 		opts.Logger = log.Default()
@@ -101,6 +107,9 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /pair", s.handlePairPage)
 	mux.HandleFunc("GET /install.sh", s.handleInstallSH)
 	mux.HandleFunc("GET /install.ps1", s.handleInstallPS1)
+	mux.HandleFunc("GET /dl/{name}", s.handleArtifact)
+	// /dl/ 及其它多段/空名请求（/dl/、/dl/a/b）统一返回 JSON 404。
+	mux.HandleFunc("/dl/", s.handleArtifactNotFound)
 	return mux
 }
 
@@ -123,6 +132,13 @@ func (s *Server) withCommon(next http.Handler) http.Handler {
 		sw.Header().Set("Referrer-Policy", "no-referrer")
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			sw.Header().Set("Cache-Control", "no-store")
+		}
+		// /dl/* 只接受白名单里的单段文件名：含 "." / ".." 段或反斜杠的路径
+		// 在进入 ServeMux 前就返回 404。否则 ServeMux 的 cleanPath 会把
+		// /dl/../x 301 重定向到 /x，既不符合契约也会暴露目录结构。
+		if strings.HasPrefix(r.URL.Path, "/dl/") && hasDotSegmentOrBackslash(r.URL.Path) {
+			writeErr(sw, http.StatusNotFound, "not_found", "文件不存在")
+			return
 		}
 		next.ServeHTTP(sw, r)
 	})

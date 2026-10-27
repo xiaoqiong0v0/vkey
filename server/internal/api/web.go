@@ -50,7 +50,7 @@ code{background:#1b1f27;padding:.1rem .35rem;border-radius:.25rem;word-break:bre
 <dt>服务器地址</dt><dd><code>{{.ServerURL}}</code></dd>
 </dl>
 <p class="muted">本页面仅展示服务端状态，不做任何解密、不保存主密码、不生成验证码。<br>
-Linux 安装：<code>curl -fsSL {{.ServerURL}}/install.sh | sh</code></p>
+Linux 安装：<code>bash -c "$(curl -fsSL {{.ServerURL}}/install.sh)"</code></p>
 </main>
 </body>
 </html>
@@ -88,7 +88,7 @@ code{background:#1b1f27;padding:.1rem .35rem;border-radius:.25rem;word-break:bre
 </div>
 <div class="box">
 <strong>Linux</strong>
-<p class="hint"><code>curl -fsSL {{.ServerURL}}/install.sh | sh</code></p>
+<p class="hint"><code>bash -c "$(curl -fsSL {{.ServerURL}}/install.sh)"</code></p>
 </div>
 <p class="hint">服务器：<code>{{.ServerURL}}</code></p>
 </main>
@@ -96,67 +96,468 @@ code{background:#1b1f27;padding:.1rem .35rem;border-radius:.25rem;word-break:bre
 </html>
 `))
 
-// installSHTemplate 是 Linux 引导脚本模板（注入 server_url，探测架构）。
-var installSHTemplate = texttemplate.Must(texttemplate.New("install.sh").Parse(`#!/usr/bin/env sh
-# vkey 引导安装脚本（由 vkeyd 自动生成）
+// installSHTemplate 是 Linux 一键安装脚本模板（注入 server_url）。
+//
+// 脚本会下载并校验产物、安装二进制、交互输入凭据、配置 udev/tmpfiles 与
+// systemd user service；所有 sudo 操作都可用 --no-sudo 跳过并打印待执行命令。
+var installSHTemplate = texttemplate.Must(texttemplate.New("install.sh").Parse(`#!/usr/bin/env bash
+# vkey Linux 一键安装脚本（由 vkeyd 生成，请勿手工编辑）
 # 服务器：{{.ServerURL}}
-set -eu
+# 推荐执行：bash -c "$(curl -fsSL {{.ServerURL}}/install.sh)"
+set -euo pipefail
 
 SERVER_URL="{{.ServerURL}}"
-CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/vkey"
-BIN_DIR="${HOME}/.local/bin"
-
-case "$(uname -s)" in
-  Linux) ;;
-  *) echo "vkey: install.sh 仅支持 Linux" >&2; exit 1 ;;
-esac
-
-case "$(uname -m)" in
-  x86_64|amd64) ARCH="amd64" ;;
-  aarch64|arm64) ARCH="arm64" ;;
-  *) echo "vkey: 不支持的架构 $(uname -m)" >&2; exit 1 ;;
-esac
-
-# 产物下载 URL 占位：M1 阶段尚未发布预构建产物（见 shared/protocol.md）。
-ARTIFACT_URL="${SERVER_URL}/dl/vkey-hid-linux-${ARCH}.tar.gz"
-TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "${TMP_DIR}"' EXIT
-
-echo "vkey: 下载 ${ARTIFACT_URL}"
-curl -fsSL "${ARTIFACT_URL}" -o "${TMP_DIR}/vkey-hid.tar.gz"
-tar -xzf "${TMP_DIR}/vkey-hid.tar.gz" -C "${TMP_DIR}"
-
-mkdir -p "${BIN_DIR}" "${CONFIG_DIR}" "${HOME}/.config/systemd/user"
-install -m 0755 "${TMP_DIR}/vkey-hid" "${BIN_DIR}/vkey-hid"
-
-if [ ! -f "${CONFIG_DIR}/config.toml" ]; then
-  cat > "${CONFIG_DIR}/config.toml" <<EOF
-server_url = "${SERVER_URL}"
-device_id = ""
-token = ""
-EOF
-  chmod 0600 "${CONFIG_DIR}/config.toml"
-  echo "vkey: 已写入 ${CONFIG_DIR}/config.toml"
+PREFIX="${HOME:-}/.local"
+DO_SERVICE=1
+DO_SUDO=1
+ASSUME_YES=0
+FORCE_LOGIN=0
+MK="${VKEY_MASTER_KEY:-}"
+CODE="${VKEY_CODE:-}"
+# 数据目录：--data-dir / VKEY_DATA_DIR 显式指定时导出给所有 vkey-hid 调用；
+# 未指定（DATA_DIR_SET=0）时沿用客户端默认。
+DATA_DIR="${VKEY_DATA_DIR:-}"
+DATA_DIR_SET=0
+if [ -n "$DATA_DIR" ]; then
+  DATA_DIR_SET=1
 fi
 
-cat > "${HOME}/.config/systemd/user/vkey-hid.service" <<EOF
+log() { printf 'vkey: %s\n' "$*"; }
+warn() { printf 'vkey: 警告：%s\n' "$*" >&2; }
+die() { printf 'vkey: %s\n' "$*" >&2; exit 1; }
+
+usage() {
+  cat <<'USAGE'
+vkey Linux 安装脚本
+
+用法：bash install.sh [选项]
+
+  --master-key <k>  首次接入：master_key（base32）
+  --code <配对码>   已有设备：一次性配对码
+  --server <url>    覆盖脚本内置的服务器地址
+  --prefix <dir>    安装前缀（默认 $HOME/.local）
+  --data-dir <dir>  数据目录（默认沿用客户端：$XDG_DATA_HOME/vkey 或 ~/.local/share/vkey）
+  --no-service      不安装/启用 systemd user service
+  --no-sudo         跳过系统集成（udev/tmpfiles/uhid 组），只打印待执行命令
+  --force-login     已有本地身份时也重新登录/配对
+  --yes             跳过 sudo 前的交互确认
+  -h, --help        显示本帮助
+
+环境变量：VKEY_MASTER_KEY、VKEY_CODE、VKEY_DATA_DIR（与对应参数等价）。
+USAGE
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --master-key)
+      [ $# -ge 2 ] || die "--master-key 缺少值"
+      MK="$2"; shift 2 ;;
+    --code)
+      [ $# -ge 2 ] || die "--code 缺少值"
+      CODE="$2"; shift 2 ;;
+    --server)
+      [ $# -ge 2 ] || die "--server 缺少值"
+      SERVER_URL="$2"; shift 2 ;;
+    --prefix)
+      [ $# -ge 2 ] || die "--prefix 缺少值"
+      PREFIX="$2"; shift 2 ;;
+    --data-dir)
+      [ $# -ge 2 ] || die "--data-dir 缺少值"
+      DATA_DIR="$2"; DATA_DIR_SET=1; shift 2 ;;
+    --no-service) DO_SERVICE=0; shift ;;
+    --no-sudo) DO_SUDO=0; shift ;;
+    --force-login) FORCE_LOGIN=1; shift ;;
+    --yes|-y) ASSUME_YES=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) die "未知参数 $1（--help 查看用法）" ;;
+  esac
+done
+
+SERVER_URL="${SERVER_URL%/}"
+PREFIX="${PREFIX%/}"
+[ -n "$SERVER_URL" ] || die "服务器地址为空；请用 --server 指定"
+[ -n "$PREFIX" ] || die "安装前缀为空"
+[ -n "${HOME:-}" ] || die "HOME 未设置"
+
+BIN="$PREFIX/bin/vkey-hid"
+SHARE_DIR="$PREFIX/share/vkey"
+CURRENT_USER="${USER:-$(id -un)}"
+# 未显式指定数据目录时按客户端默认推导（仅用于身份检测与展示，不导出）。
+if [ "$DATA_DIR_SET" = 0 ]; then
+  if [ -n "${XDG_DATA_HOME:-}" ]; then
+    DATA_DIR="$XDG_DATA_HOME/vkey"
+  else
+    DATA_DIR="$HOME/.local/share/vkey"
+  fi
+fi
+if [ "$DATA_DIR_SET" = 1 ]; then
+  export VKEY_DATA_DIR="$DATA_DIR"
+fi
+
+print_sudo_commands() {
+  cat <<EOF
+系统集成未执行。请手动执行（需要 root）：
+  sudo install -m644 $SHARE_DIR/99-vkey-uhid.rules /etc/udev/rules.d/99-vkey-uhid.rules
+  sudo install -m644 $SHARE_DIR/vkey-uhid.conf /etc/tmpfiles.d/vkey-uhid.conf
+  sudo systemd-tmpfiles --create /etc/tmpfiles.d/vkey-uhid.conf
+  sudo groupadd -f uhid
+  sudo usermod -aG uhid "$CURRENT_USER"
+  sudo udevadm control --reload-rules && sudo udevadm trigger
+  sudo loginctl enable-linger "$CURRENT_USER"   # 让 user service 在未登录时也常驻
+EOF
+}
+
+# ensure_sudo_ready 在下载/登录等任何写入之前确认 sudo 可用。
+#
+# 判定顺序：免密/已有票据（sudo -n）→ 已配置可执行的 SUDO_ASKPASS（sudo -A）→ 有 TTY 时交互取密码（sudo -v）。
+# 三者都不满足时立即退出，避免「已下载/已登录但系统集成未装」的半装状态；
+# 退出时不做任何写入（不下载、不 login）。
+ensure_sudo_ready() {
+  if [ "$DO_SUDO" = 0 ]; then
+    return 0
+  fi
+  if command -v sudo >/dev/null 2>&1; then
+    if sudo -n true 2>/dev/null; then
+      return 0
+    fi
+    # 无 TTY（CI/远程管道）但已配置 askpass 时，用 sudo -A 走 askpass 取密码。
+    if [ -n "${SUDO_ASKPASS:-}" ] && [ -x "${SUDO_ASKPASS}" ]; then
+      log "检测到 SUDO_ASKPASS=$SUDO_ASKPASS，尝试通过 askpass 获取 sudo 权限"
+      if sudo -A -v 2>/dev/null; then
+        return 0
+      fi
+    fi
+    if [ -t 0 ]; then
+      log "配置 udev/tmpfiles/uhid 组需要 sudo 权限，请输入密码"
+      if sudo -v; then
+        return 0
+      fi
+    fi
+  fi
+  warn "无法获得 sudo 权限（未免密，没有可交互的终端，也未配置可用的 SUDO_ASKPASS）。"
+  warn "已在下载/登录之前退出，未做任何写入（不会留下半装状态）。"
+  cat >&2 <<EOF
+请任选其一重试：
+
+  1) 跳过系统集成，只安装二进制并登录（之后逐条手动补全命令）：
+     bash install.sh --no-sudo
+     后置手动命令：
+EOF
+  print_sudo_commands >&2
+  cat >&2 <<EOF
+
+  2) 保留终端重跑，让 sudo 能当场交互读取密码：
+     bash -c "\$(curl -fsSL $SERVER_URL/install.sh)"
+
+  3) 无终端场景（CI/自动部署）改用 askpass 提供密码：
+     SUDO_ASKPASS=/path/to/askpass.sh bash -c "\$(curl -fsSL $SERVER_URL/install.sh)"
+     （askpass.sh 需可执行，打印密码到 stdout；sudo 以 sudo -A 调用）
+EOF
+  exit 1
+}
+
+[ "$(uname -s)" = "Linux" ] || die "install.sh 仅支持 Linux（当前 $(uname -s)）"
+case "$(uname -m)" in
+  x86_64|amd64) ARCH="x86_64" ;;
+  aarch64|arm64) ARCH="aarch64" ;;
+  *) die "不支持的架构 $(uname -m)；当前仅提供 x86_64、aarch64 产物" ;;
+esac
+
+# sudo 前置检查：必须在下载/登录之前完成，失败即退出且不做任何写入。
+ensure_sudo_ready
+
+FETCH=""
+if command -v curl >/dev/null 2>&1; then
+  FETCH="curl"
+elif command -v wget >/dev/null 2>&1; then
+  FETCH="wget"
+fi
+[ -n "$FETCH" ] || die "缺少下载工具 curl 或 wget。安装提示：Debian/Ubuntu 执行 sudo apt-get install -y curl tar；Fedora 执行 sudo dnf install -y curl tar"
+command -v tar >/dev/null 2>&1 || die "缺少 tar。安装提示：Debian/Ubuntu 执行 sudo apt-get install -y tar；Fedora 执行 sudo dnf install -y tar"
+command -v install >/dev/null 2>&1 || die "缺少 install（coreutils）"
+if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1 && ! command -v openssl >/dev/null 2>&1; then
+  die "缺少 sha256 校验工具（sha256sum / shasum / openssl）。安装提示：安装 coreutils 或 openssl"
+fi
+
+fetch() {
+  if [ "$FETCH" = "curl" ]; then
+    curl -fsSL "$1" -o "$2"
+  else
+    wget -q -O "$2" "$1"
+  fi
+}
+
+normalize_hash() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    normalize_hash "$(sha256sum "$1" | cut -d' ' -f1)"
+  elif command -v shasum >/dev/null 2>&1; then
+    normalize_hash "$(shasum -a 256 "$1" | cut -d' ' -f1)"
+  else
+    normalize_hash "$(openssl dgst -sha256 "$1" | awk '{print $NF}')"
+  fi
+}
+
+TMP_DIR="$(mktemp -d)" || die "无法创建临时目录"
+trap 'rm -rf "$TMP_DIR"' EXIT HUP INT TERM
+
+ARTIFACT="vkey-hid-linux-${ARCH}.tar.gz"
+log "服务器：$SERVER_URL"
+log "下载清单 $SERVER_URL/dl/SHA256SUMS"
+fetch "$SERVER_URL/dl/SHA256SUMS" "$TMP_DIR/SHA256SUMS" || die "下载 SHA256SUMS 失败（服务器不可用？）"
+log "下载产物 $SERVER_URL/dl/$ARTIFACT"
+fetch "$SERVER_URL/dl/$ARTIFACT" "$TMP_DIR/$ARTIFACT" || die "下载 $ARTIFACT 失败（该架构可能尚未发布产物）"
+
+EXPECTED=""
+while read -r HASH NAME REST; do
+  NAME="${NAME#\*}"
+  if [ "$NAME" = "$ARTIFACT" ]; then
+    EXPECTED="$(normalize_hash "$HASH")"
+    break
+  fi
+done < "$TMP_DIR/SHA256SUMS"
+[ -n "$EXPECTED" ] || die "SHA256SUMS 中没有 $ARTIFACT"
+ACTUAL="$(sha256_of "$TMP_DIR/$ARTIFACT")"
+if [ "$ACTUAL" != "$EXPECTED" ]; then
+  die "sha256 校验失败：期望 $EXPECTED，实际 $ACTUAL（未覆盖任何已安装文件）"
+fi
+log "sha256 校验通过"
+
+mkdir -p "$TMP_DIR/extract"
+tar -xzf "$TMP_DIR/$ARTIFACT" -C "$TMP_DIR/extract" || die "解包失败：$ARTIFACT"
+for f in vkey-hid 99-vkey-uhid.rules vkey-hid.service; do
+  [ -f "$TMP_DIR/extract/$f" ] || die "产物缺少 $f"
+done
+
+mkdir -p "$PREFIX/bin" "$SHARE_DIR"
+# 原子替换：先装到同目录临时名再 mv，正在运行的旧二进制不会导致 ETXTBSY。
+install -m 0755 "$TMP_DIR/extract/vkey-hid" "$BIN.new"
+mv -f "$BIN.new" "$BIN"
+install -m 0644 "$TMP_DIR/extract/99-vkey-uhid.rules" "$SHARE_DIR/99-vkey-uhid.rules"
+install -m 0644 "$TMP_DIR/extract/vkey-hid.service" "$SHARE_DIR/vkey-hid.service"
+printf 'z /dev/uhid 0660 root uhid -\n' > "$SHARE_DIR/vkey-uhid.conf"
+chmod 0644 "$SHARE_DIR/vkey-uhid.conf"
+log "已安装二进制 $BIN"
+
+NEED_LOGIN=1
+LOGIN_STATE="已完成"
+if [ "$FORCE_LOGIN" = 0 ] && [ -f "$DATA_DIR/identity.json" ]; then
+  NEED_LOGIN=0
+  LOGIN_STATE="已存在本地身份（跳过 login）"
+  log "已安装（检测到 $DATA_DIR/identity.json）：跳过 login（--force-login 可重接）"
+fi
+
+# 读取敏感输入：不回显、不写入任何文件；脚本本身退出后即失效。
+read_secret() {
+  VALUE=""
+  printf '%s' "$1" >&2
+  if ! read -rs VALUE; then
+    stty -echo 2>/dev/null || true
+    read -r VALUE || true
+    stty echo 2>/dev/null || true
+  fi
+  printf '\n' >&2
+  printf '%s' "$VALUE"
+}
+
+if [ "$NEED_LOGIN" = 1 ]; then
+  if [ -n "$MK" ] && [ -n "$CODE" ]; then
+    die "只能指定 --master-key 或 --code 其中一种"
+  fi
+  if [ -z "$MK" ] && [ -z "$CODE" ]; then
+    if [ ! -t 0 ]; then
+      die "stdin 不是终端，无法交互输入凭据。请改用：bash -c \"\$(curl -fsSL $SERVER_URL/install.sh)\"，或显式传 --master-key/--code"
+    fi
+    printf '请选择接入方式：\n  1) 输入 master_key（首次接入）\n  2) 输入配对码（已有设备）\n> ' >&2
+    read -r CHOICE || die "读取选择失败"
+    case "$CHOICE" in
+      1) MK="$(read_secret 'master_key: ')" ;;
+      2) CODE="$(read_secret '配对码: ')" ;;
+      *) die "无效选择：$CHOICE" ;;
+    esac
+  fi
+  [ -n "$MK$CODE" ] || die "未提供凭据"
+  log "向 $SERVER_URL 接入设备"
+  if [ -n "$MK" ]; then
+    if ! "$BIN" login --server "$SERVER_URL" --master-key "$MK"; then
+      die "login 失败：请检查 master_key 与服务器地址"
+    fi
+    MK=""
+  else
+    set -- pair --server "$SERVER_URL" --code "$CODE"
+    if [ "$FORCE_LOGIN" = 1 ]; then
+      set -- "$@" --force
+    fi
+    if ! "$BIN" "$@"; then
+      die "pair 失败：请检查配对码是否有效、未过期且未被使用"
+    fi
+    CODE=""
+  fi
+else
+  MK=""
+  CODE=""
+fi
+
+install_system_integration() {
+  if [ "$DO_SUDO" = 0 ]; then
+    print_sudo_commands
+    return 0
+  fi
+  if ! command -v sudo >/dev/null 2>&1; then
+    warn "未找到 sudo，无法执行系统集成"
+    print_sudo_commands
+    return 1
+  fi
+  # 判定（sudo 前置检查 ensure_sudo_ready 已通过）：TTY 且未给 --yes ⇒ 询问；否则直接执行。
+  # 无 TTY 场景（curl|bash 管道、SUDO_ASKPASS 自动部署、CI）绝不能进入 read：
+  # 否则 read 立刻命中 EOF，会被当成「答否」，从而只打印命令而不真正安装系统集成。
+  if [ -t 0 ] && [ "$ASSUME_YES" -eq 0 ]; then
+    printf '将使用 sudo 配置 udev/tmpfiles 与 uhid 组，继续？[y/N] ' >&2
+    read -r REPLY || REPLY=""
+    case "$REPLY" in
+      y|Y|yes|YES) ;;
+      *) print_sudo_commands; return 0 ;;
+    esac
+  else
+    log "非交互或已指定 --yes，直接执行系统集成（udev/tmpfiles/uhid 组）"
+  fi
+  # 逐条检查：任何一步失败都返回非零，由调用方统一输出「部分安装」总结。
+  sudo install -m 0644 "$SHARE_DIR/99-vkey-uhid.rules" /etc/udev/rules.d/99-vkey-uhid.rules || return 1
+  sudo install -m 0644 "$SHARE_DIR/vkey-uhid.conf" /etc/tmpfiles.d/vkey-uhid.conf || return 1
+  sudo systemd-tmpfiles --create /etc/tmpfiles.d/vkey-uhid.conf || return 1
+  sudo groupadd -f uhid || return 1
+  sudo usermod -aG uhid "$CURRENT_USER" || return 1
+  sudo udevadm control --reload-rules || return 1
+  sudo udevadm trigger || return 1
+  log "已配置 udev / tmpfiles / uhid 组"
+  return 0
+}
+
+install_user_service() {
+  if [ "$DO_SERVICE" = 0 ]; then
+    log "按 --no-service 跳过 systemd user service"
+    return 0
+  fi
+  UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+  mkdir -p "$UNIT_DIR"
+  # 显式指定数据目录时，把 VKEY_DATA_DIR 也写进 unit，保证 daemon 与 login 用同一目录。
+  if [ "$DATA_DIR_SET" = 1 ]; then
+    DATA_DIR_ENV="Environment=VKEY_DATA_DIR=$DATA_DIR"
+  else
+    DATA_DIR_ENV=""
+  fi
+  cat > "$UNIT_DIR/vkey-hid.service" <<EOF
 [Unit]
-Description=vkey virtual FIDO2 daemon
-After=default.target
+Description=vkey FIDO2 虚拟安全密钥（uhid + 零知识同步）
+After=graphical-session.target
+PartOf=graphical-session.target
 
 [Service]
-ExecStart=%h/.local/bin/vkey-hid
+Type=simple
+ExecStart="$PREFIX/bin/vkey-hid" run
+$DATA_DIR_ENV
 Restart=on-failure
 RestartSec=3
+TimeoutStopSec=10
+Environment=RUST_BACKTRACE=1
 
 [Install]
 WantedBy=default.target
 EOF
+  chmod 0644 "$UNIT_DIR/vkey-hid.service"
+  SERVICE_OK=1
+  if command -v systemctl >/dev/null 2>&1; then
+    if systemctl --user daemon-reload && systemctl --user enable --now vkey-hid; then
+      log "已启用 systemd user service：vkey-hid"
+    else
+      warn "systemctl --user 操作失败（可能没有用户 systemd 会话）。登录图形会话后执行：systemctl --user daemon-reload && systemctl --user enable --now vkey-hid"
+      SERVICE_OK=0
+    fi
+  else
+    warn "未找到 systemctl；请稍后手动启用 $UNIT_DIR/vkey-hid.service"
+    SERVICE_OK=0
+  fi
+  if [ "$DO_SUDO" = 1 ] && command -v sudo >/dev/null 2>&1; then
+    sudo loginctl enable-linger "$CURRENT_USER" || warn "loginctl enable-linger 失败（不影响安装）"
+  fi
+  [ "$SERVICE_OK" = 1 ]
+}
 
-systemctl --user daemon-reload || true
-systemctl --user enable --now vkey-hid.service || true
+PARTIAL=0
+SUDO_STATE="已完成"
+if ! install_system_integration; then
+  SUDO_STATE="失败"
+  PARTIAL=1
+elif [ "$DO_SUDO" = 0 ]; then
+  SUDO_STATE="未执行（--no-sudo）"
+fi
 
-echo "vkey: 安装完成。请在客户端中完成设备配对（${SERVER_URL}/pair）。"
+SERVICE_STATE="已启用"
+if ! install_user_service; then
+  SERVICE_STATE="失败"
+  PARTIAL=1
+elif [ "$DO_SERVICE" = 0 ]; then
+  SERVICE_STATE="未安装（--no-service）"
+fi
+
+if [ "$PARTIAL" = 1 ]; then
+  cat >&2 <<EOF
+
+vkey 部分安装：部分步骤未完成，安装尚未完全生效
+  服务器:    $SERVER_URL
+  二进制:    $BIN
+  数据目录:  $DATA_DIR
+  登录:      $LOGIN_STATE
+
+已完成：
+  - 下载、校验、安装二进制
+  - 账号接入：$LOGIN_STATE
+
+未完成：
+  - 系统集成（udev/tmpfiles/uhid 组）：$SUDO_STATE
+  - systemd user service：$SERVICE_STATE
+
+请逐条手动补全（需要 root 的命令用 sudo）：
+EOF
+  print_sudo_commands >&2
+  cat >&2 <<EOF
+  systemctl --user daemon-reload && systemctl --user enable --now vkey-hid
+  重新登录一次后确认：ls -l /dev/uhid
+
+排障：
+  systemctl --user status vkey-hid
+  journalctl --user -u vkey-hid -n 50 --no-pager
+  $BIN status
+EOF
+  exit 1
+fi
+
+if [ "$DO_SERVICE" = 1 ]; then
+  SERVICE_STATE="$(systemctl --user is-active vkey-hid 2>/dev/null || printf 'unknown')"
+fi
+
+case ":$PATH:" in
+  *":$PREFIX/bin:"*) ;;
+  *) printf '提示：%s 不在 PATH 中，可加入 shell 配置。\n' "$PREFIX/bin" ;;
+esac
+
+cat <<EOF
+
+vkey 安装完成
+  服务器:    $SERVER_URL
+  二进制:    $BIN
+  数据目录:  $DATA_DIR
+  用户服务:  $SERVICE_STATE
+
+重要：需要重新登录一次（组生效）后 daemon 才能打开 /dev/uhid。
+      首次安装请注销并重新登录（或重启），然后确认：ls -l /dev/uhid
+
+排障：
+  systemctl --user status vkey-hid
+  journalctl --user -u vkey-hid -n 50 --no-pager
+  $BIN status
+EOF
 `))
 
 // installPS1Template 是 Windows 引导脚本模板。

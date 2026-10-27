@@ -489,11 +489,21 @@ LWW（last-write-wins）规则：
 |---|---|
 | `GET /` | 自检页（HTML）：状态、版本、条目数、设备数、策略、服务器地址。**无解密逻辑** |
 | `GET /pair` | 配对页（HTML）：配对码输入提示（只读占位）+ APK 下载占位 |
-| `GET /install.sh` | Linux 引导脚本：注入 `server_url`、探测 `uname -m`、下载产物占位、写配置与 systemd user unit |
+| `GET /install.sh` | Linux 引导脚本：注入 `server_url`、`uname -m` 选择架构、按 `SHA256SUMS` 校验后下载 `/dl/vkey-hid-linux-<x86_64\|aarch64>.tar.gz`、安装二进制、交互输入凭据、写 udev/tmpfiles 与 systemd user unit（`--no-sudo`/`--no-service` 可跳过） |
 | `GET /install.ps1` | Windows 引导脚本：注入 `server_url`、探测 `PROCESSOR_ARCHITECTURE`、下载 MSI 占位、写 `%APPDATA%\vkey` 配置 |
+| `GET /dl/{name}` | 产物下载（免鉴权，只读）：`name` 必须匹配 `^[A-Za-z0-9._-]+$` 且出现在 `<artifacts-dir>/SHA256SUMS` 里，否则 404（含 `/`、`..`、空名与多段路径）。响应 `application/octet-stream` + `Content-Length` + `Cache-Control: no-cache` |
+| `GET /dl/SHA256SUMS` | 产物清单（免鉴权）：`text/plain; charset=utf-8`，格式同 `sha256sum` 输出；目录不存在时 `/dl/*` 一律 404 |
 
-产物下载路径为占位：`/dl/vkey-hid-linux-<amd64|arm64>.tar.gz`、`/dl/vkey-win-<amd64|arm64>.msi`、
-`/dl/vkey-android.apk`，M1 不提供实际文件。
+产物命名（`/dl/{name}` 的白名单由 `SHA256SUMS` 决定）：
+
+| 产物 | 状态 |
+|---|---|
+| `vkey-hid-linux-x86_64.tar.gz` | ✅ 已提供（M1） |
+| `vkey-hid-linux-aarch64.tar.gz` | ⏳ 需交叉工具链，未构建时报 404 |
+| `vkey-win-<amd64\|arm64>.msi` | ⏳ 占位（M2） |
+| `vkey-android.apk` | ⏳ 占位（M3） |
+
+产物由 `server/deploy/` 流程上传到服务端 `--artifacts-dir`（默认 `./artifacts`），目录内必须同时存在 `SHA256SUMS`；缺失时 `/dl/*` 一律 404。
 
 服务器地址来源：启动参数 `--domain` 优先；未设置时按请求 `Host` +
 `X-Forwarded-Proto` 推导。取值经字符白名单过滤后才注入脚本。

@@ -552,7 +552,7 @@ LWW（last-write-wins）规则：
 | `private_key` | string | 是 | base64url(PKCS#8 DER)，由客户端在解密后导入 |
 | `sign_count` | int | 否 | 断言计数器，每次签名后 +1（服务端不校验） |
 | `transports` | array\<string\> | 否 | 如 `["internal"]` |
-| `discoverable` | bool | 否 | 是否为可发现凭据（第一版不声明 rk，默认 false） |
+| `discoverable` | bool | 否 | 是否为可发现凭据（`rk=true` 注册时为 true；缺省 false） |
 
 样例：`shared/examples/item-webauthn.json`
 

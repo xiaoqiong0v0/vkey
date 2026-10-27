@@ -142,7 +142,7 @@ GET  /api/v1/health
 - 复用 spike 结论，**10 个坑必须内化**（见 §8）
 - 架构：`vkey-hid`（systemd user service）→ `/dev/uhid` 虚拟设备 → 每次 CTAP2 请求时从**本地加密缓存**读私钥解密签名，签名后立即清零
 - 权限：udev 规则给 `uinput`/`uhid`/`hidraw` 授权（`uaccess` 或固定 group），**避免要求 root 常驻**
-- 未解决：`rk:true` 时 Chrome 的 UV 语义（见 §7），第一版不声明 rk
+- 已解决（2026-10-27）：`rk:true` 的阻塞实为 `GetInfo.options` 未声明 `rk`/`uv` 导致的 `kMissingCapability` 预检；声明 `{rk,up,uv}` 后 passkey 注册/登录均通过（UV = `up` 口径）
 
 ### 5.2 Windows（Rust + WebAuthn Plugin API）— 需验证
 - Windows 11 24H2+ 官方 `webauthnplugin.h`：注册 COM `IPluginAuthenticator`，UV 走 Windows Hello（体验最好）

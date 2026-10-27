@@ -178,7 +178,8 @@ GET  /api/v1/health
 
 | 风险 | 影响 | 缓解 |
 |---|---|---|
-| `rk:true` + RP 要 residentKey → Chrome 静默等待超时（spike 实测） | 无法做无用户名 passkey | 第一版不声明 rk；二期研究 UV/`makeCredUvNotRqd` 语义 |
+| `rk:true` + RP 要 residentKey → Chrome 静默等待超时（spike 实测） | 无法做无用户名 passkey | **已解决（2026-10-27）**：根因是 `GetInfo.options` 未声明 `rk`/`uv`，Chrome 在 `authenticatorSelection` 预检即判 `kMissingCapability`，`makeCredential` 从未发出。声明 `{rk:true, up:true, uv:true}` 后 V2/V3/V4 全通过；UV 口径 = `up` 即 uv（软件密钥，README 已注明） |
+| RP 用 `allowCredentials[].transports` 限定传输（如 npm 只给 `["hybrid","internal"]`） | 虚拟 USB 密钥被**合法排除**，弹窗只给二维码、daemon 零 CTAP 流量 | **站点侧限制，非设备缺陷**。解法：先走该站「新增安全密钥/passkey」的 create 流程（通常不带 transports 限制），注册后新凭据带 `usb` transport，之后登录即可被枚举。npm 实测：注册 `0x01 ok` → 登录 `0x02 ok` |
 | 虚拟密钥 = 软件密钥，本机恶意进程可调用 | 安全等级低于 YubiKey | UI 明示；私钥仅在签名瞬间解密；可选「每次确认」（polkit/Hello） |
 | 国产 ROM 不暴露 Credential Manager | Android passkey 不可用 | 特性开关 + 文档；TOTP 不受影响 |
 | 扩展劫持遇 CSP/站点隔离 | 个别站点不可用 | 降级到「一次性验证码复制」 |
@@ -201,6 +202,8 @@ GET  /api/v1/health
 10. CTAP2 错误应答只能是**单个状态字节**
 11. **getAssertion 应答外层键位是 `1=credential / 2=authData / 3=signature / 5=numberOfCredentials`**（不是 1=authData），且 descriptor 与 user 实体**内层用文本键**：`{"type":"public-key","id":<bytes>}`、`{"id":<bytes>}`。依据 Chrome 156 `public_key_credential_descriptor.cc`（`kCredentialIdKey="id"`、`kCredentialTypeKey="type"`）与 `device_response_converter.cc:242-274`；键位或内层写错 → Chrome 合成 `kCtap2ErrInvalidCBOR(0x12)` 且 JS Promise 永不 settle
 12. **不做 UV 且非 discoverable 时，getAssertion 不得返回 user 实体（0x04）**，否则 `get_assertion_request_handler.cc:138-143` 判非法，回 `NotAllowedError`
+13. **CTAPHID 响应首字节必须是状态码**（成功 = `0x00` + 裸 CBOR；错误 = 单字节状态码）。去掉成功响应的 `0x00` 会让 Chrome 把 CBOR 首字节当状态码读（实测 `GetInfo` 报 error 166 = `0xA6` = map(6) 头），整条链路 0/4 全挂
+14. **passkey 站点要求 `rk`+`uv` 能力**：`GetInfo.options` 缺任一项，Chrome 在发命令前就判 `kMissingCapability`（表现为弹窗只给二维码/一直等插入），加 `--vmodule=device/fido/*=3` 可看到 `authenticator_request_dialog_model.cc` 的 UI step
 
 ---
 

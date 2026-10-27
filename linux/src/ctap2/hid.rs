@@ -7,6 +7,10 @@
 
 use anyhow::{bail, Result};
 use std::collections::HashMap;
+use std::sync::OnceLock;
+
+/// `VKEY_CTAPHID_DEBUG=1` 时的分片分发调试日志开关（进程内只读一次）。
+static CTAPHID_DEBUG: OnceLock<bool> = OnceLock::new();
 
 pub const HID_REPORT_SIZE: usize = 64;
 pub const INIT_PAYLOAD: usize = 57;
@@ -173,6 +177,9 @@ impl<H: Ctap2Handler> CtapHid<H> {
     }
 
     fn dispatch(&mut self, cid: u32, cmd: u8, payload: &[u8]) -> Result<()> {
+        if ctaphid_debug_enabled() {
+            eprintln!("HID cmd=0x{cmd:02x} cid=0x{cid:08x} len={}", payload.len());
+        }
         match cmd {
             CTAPHID_INIT => self.on_init(cid, payload),
             CTAPHID_PING => self.send(cid, CTAPHID_PING, payload),
@@ -223,6 +230,11 @@ impl<H: Ctap2Handler> CtapHid<H> {
         }
         Ok(())
     }
+}
+
+/// CTAPHID 分发调试日志是否开启（`VKEY_CTAPHID_DEBUG=1`）。
+fn ctaphid_debug_enabled() -> bool {
+    crate::ctap2::debug_flag(&CTAPHID_DEBUG, "VKEY_CTAPHID_DEBUG")
 }
 
 #[cfg(test)]

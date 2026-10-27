@@ -152,3 +152,123 @@ func TestInstallSHRender(t *testing.T) {
 		t.Fatalf("install.sh 存在未渲染的模板标记")
 	}
 }
+
+// identityBlock 取出 install.sh 中「身份检查」到下载开始之间的脚本片段。
+//
+// 该片段的边界由脚本里的固定标记界定：起始注释与 `FETCH=""`（下载工具探测之前）。
+func identityBlock(t *testing.T, script string) string {
+	t.Helper()
+	start := strings.Index(script, "# 身份检查：")
+	end := strings.Index(script, `FETCH=""`)
+	if start < 0 || end < 0 || end < start {
+		t.Fatalf("install.sh 缺少身份检查段标记（start=%d end=%d）", start, end)
+	}
+	return script[start:end]
+}
+
+// assertNoBareRead 断言片段内所有 read 都位于 `if [ -t 0 ]` 判定之内。
+//
+// 非 TTY 场景下 read 会立刻命中 EOF 并被当成「答否」，因此身份询问必须整体受 TTY 保护。
+func assertNoBareRead(t *testing.T, block string) {
+	t.Helper()
+	var guards []bool
+	for _, line := range strings.Split(block, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") {
+			continue // 注释里的 read 不算交互读取
+		}
+		switch {
+		case strings.HasPrefix(trimmed, "if "):
+			guards = append(guards, strings.Contains(trimmed, "[ -t 0 ]"))
+		case trimmed == "fi" || strings.HasPrefix(trimmed, "fi "):
+			if len(guards) > 0 {
+				guards = guards[:len(guards)-1]
+			}
+		case strings.HasPrefix(trimmed, "read ") || strings.Contains(trimmed, " read "):
+			guarded := false
+			for _, g := range guards {
+				if g {
+					guarded = true
+					break
+				}
+			}
+			if !guarded {
+				t.Fatalf("身份检查块中的 read 未受 [ -t 0 ] 保护：%q", trimmed)
+			}
+		}
+	}
+}
+
+// TestInstallSHIdentityPrompt 静态校验「检测到旧身份」的提示、询问与退出分支。
+//
+// 背景：早前测试留下的 identity.json（指向 127.0.0.1）曾导致脚本静默跳过 login，
+// 用户误以为已接入生产。这里锁定四条行为：
+//  1. 同 server：提示身份并询问「是否重新认证？[y/N]」；
+//  2. 不同 server：提示不一致并询问「是否重新认证并切换？（默认是）」；
+//  3. 身份检查必须位于下载之前（省流量）；
+//  4. 非 TTY 分支绝不 read。
+func TestInstallSHIdentityPrompt(t *testing.T) {
+	e := newEnv(t)
+	resp := e.getNoAuth("/install.sh")
+	requireStatus(t, resp, http.StatusOK)
+	script := string(resp.body)
+
+	// 文案：两条询问路径与提示内容。
+	for _, want := range []string{
+		"检测到已存在的本地身份",
+		"是否重新认证？[y/N]",
+		"检测到旧身份指向",
+		"与目标",
+		"是否重新认证并切换到",
+		"[Y/n]",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("install.sh 缺少旧身份提示 %q", want)
+		}
+	}
+
+	// server_url 解析：只用 POSIX sed（不依赖 jq），字段为 server_url。
+	if !strings.Contains(script, "sed -n") || !strings.Contains(script, "identity_field server_url") {
+		t.Fatalf("install.sh 缺少基于 sed 的 server_url 解析")
+	}
+	if strings.Contains(script, "| jq") || strings.Contains(script, "jq -r") {
+		t.Fatalf("install.sh 不应依赖 jq")
+	}
+	// 解析不到（空串）按「不一致」处理：判定是字面相等比较，SERVER_URL 非空时空串必然不等。
+	if !strings.Contains(script, `if [ "$IDENTITY_SERVER" = "$SERVER_URL" ]; then`) {
+		t.Fatalf("install.sh 缺少 server_url 一致性判定")
+	}
+
+	// 顺序：sudo 前置检查 → 身份检查 → 下载。
+	sudoIdx := strings.Index(script, "sudo -n true")
+	identIdx := strings.Index(script, "# 身份检查：")
+	downloadIdx := strings.Index(script, `log "下载清单`)
+	if sudoIdx < 0 || identIdx < 0 || downloadIdx < 0 {
+		t.Fatalf("install.sh 缺少 sudo/身份/下载 标记（sudo=%d ident=%d dl=%d）", sudoIdx, identIdx, downloadIdx)
+	}
+	if sudoIdx > identIdx {
+		t.Fatalf("身份检查应在 sudo 前置检查之后（sudo=%d ident=%d）", sudoIdx, identIdx)
+	}
+	if identIdx > downloadIdx {
+		t.Fatalf("身份检查应在下载之前（ident=%d dl=%d）", identIdx, downloadIdx)
+	}
+
+	block := identityBlock(t, script)
+	assertNoBareRead(t, block)
+
+	// 不同 server 且无法交互时退出，并给出三种解法。
+	for _, want := range []string{"bash install.sh --force-login", "rm -rf $DATA_DIR", "--data-dir <dir>"} {
+		if !strings.Contains(block, want) {
+			t.Fatalf("install.sh 缺少「不同 server 且无法交互」的解法提示 %q", want)
+		}
+	}
+
+	// 结尾摘要必须给出最终身份（server 与 device）。
+	finalIdx := strings.Index(script, "本地身份:")
+	if finalIdx < 0 {
+		t.Fatalf("install.sh 结尾摘要缺少最终身份展示")
+	}
+	if !strings.Contains(script[finalIdx:], "FINAL_SERVER") || !strings.Contains(script[finalIdx:], "FINAL_DEVICE") {
+		t.Fatalf("结尾摘要应打印最终身份 server 与 device")
+	}
+}

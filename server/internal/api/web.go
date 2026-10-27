@@ -139,8 +139,8 @@ vkey Linux 安装脚本
   --data-dir <dir>  数据目录（默认沿用客户端：$XDG_DATA_HOME/vkey 或 ~/.local/share/vkey）
   --no-service      不安装/启用 systemd user service
   --no-sudo         跳过系统集成（udev/tmpfiles/uhid 组），只打印待执行命令
-  --force-login     已有本地身份时也重新登录/配对
-  --yes             跳过 sudo 前的交互确认
+  --force-login     已有本地身份时也重新登录/配对（旧身份指向其它服务器时必选，否则退出）
+  --yes             跳过交互确认（含 sudo 与旧身份询问；旧身份指向其它服务器时直接退出）
   -h, --help        显示本帮助
 
 环境变量：VKEY_MASTER_KEY、VKEY_CODE、VKEY_DATA_DIR（与对应参数等价）。
@@ -193,6 +193,13 @@ fi
 if [ "$DATA_DIR_SET" = 1 ]; then
   export VKEY_DATA_DIR="$DATA_DIR"
 fi
+
+# identity_field <字段名>：用 POSIX 工具从 identity.json 取第一个字符串字段（不依赖 jq）。
+# server_url 字段的等价写法：
+#   sed -n 's/.*"server_url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$DATA_DIR/identity.json"
+identity_field() {
+  sed -n 's/.*"'"$1"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$DATA_DIR/identity.json" 2>/dev/null | head -n 1 || true
+}
 
 print_sudo_commands() {
   cat <<EOF
@@ -265,6 +272,81 @@ esac
 
 # sudo 前置检查：必须在下载/登录之前完成，失败即退出且不做任何写入。
 ensure_sudo_ready
+
+# 身份检查：同样必须在下载之前（问答失败就不该消耗流量），且在 sudo 前置检查之后。
+# EXISTING   = $DATA_DIR/identity.json 存在
+# SAME_SERVER = 其中 server_url 与本次目标一致（解析不到按「不一致」处理，
+#               避免把早前测试留下的身份当成生产身份而静默跳过 login）
+NEED_LOGIN=1
+LOGIN_STATE="已完成"
+IDENTITY_SERVER=""
+IDENTITY_DEVICE=""
+IDENTITY_ASKED=0
+if [ -f "$DATA_DIR/identity.json" ]; then
+  IDENTITY_SERVER="$(identity_field server_url)"
+  IDENTITY_DEVICE="$(identity_field device_name)"
+fi
+
+# 旧身份处理矩阵：
+#   同 server  + TTY + 未 --yes          → 询问「是否重新认证？[y/N]」（默认保留）
+#   同 server  + 非 TTY 或 --yes          → 跳过 login，保留旧身份（日志说明原因）
+#   不同 server + TTY + 未 --yes          → 询问「是否重新认证并切换？」（默认是），答否即退出 1
+#   不同 server + 非 TTY 或 --yes         → 退出 1 并给出三种解法
+# 所有 read 都在 [ -t 0 ] 之内：非 TTY 绝不读取，避免 EOF 被当成「答否」。
+if [ -f "$DATA_DIR/identity.json" ] && [ "$FORCE_LOGIN" = 0 ]; then
+  if [ "$IDENTITY_SERVER" = "$SERVER_URL" ]; then
+    if [ -t 0 ] && [ "$ASSUME_YES" -eq 0 ]; then
+      printf 'vkey: 检测到已存在的本地身份（server=%s%s）\n' \
+        "$IDENTITY_SERVER" "${IDENTITY_DEVICE:+, device=$IDENTITY_DEVICE}" >&2
+      printf '是否重新认证？[y/N] ' >&2
+      read -r REPLY || REPLY=""
+      IDENTITY_ASKED=1
+      case "$REPLY" in
+        y|Y|yes|YES) FORCE_LOGIN=1 ;;
+      esac
+    fi
+    if [ "$FORCE_LOGIN" = 1 ]; then
+      log "将重新认证，旧身份（$DATA_DIR/identity.json）会被覆盖"
+    else
+      NEED_LOGIN=0
+      LOGIN_STATE="已存在本地身份（跳过 login）"
+      # 说明跳过原因：交互确认过 / 非 TTY / --yes，三者行为一致但原因不同。
+      if [ "$IDENTITY_ASKED" = 1 ]; then
+        IDENTITY_SKIP_REASON="已在提示中确认保留旧身份"
+      elif [ ! -t 0 ]; then
+        IDENTITY_SKIP_REASON="stdin 不是终端，无法交互确认"
+      else
+        IDENTITY_SKIP_REASON="已指定 --yes"
+      fi
+      log "保留旧身份（server=$IDENTITY_SERVER），跳过 login（$IDENTITY_SKIP_REASON；--force-login 可重新认证）"
+    fi
+  else
+    if [ -t 0 ] && [ "$ASSUME_YES" -eq 0 ]; then
+      printf 'vkey: ⚠ 检测到旧身份指向 %s，与目标 %s 不一致\n' \
+        "${IDENTITY_SERVER:-未知（无法解析）}" "$SERVER_URL" >&2
+      printf '是否重新认证并切换到 %s？[Y/n] ' "$SERVER_URL" >&2
+      read -r REPLY || REPLY=""
+      case "$REPLY" in
+        n|N|no|NO)
+          die "已取消：保留 $DATA_DIR 中的旧身份（指向 ${IDENTITY_SERVER:-未知（无法解析）}）。
+如需保留旧身份而不重新认证，请改用 --data-dir 另置数据目录，或清理 $DATA_DIR 后重跑。" ;;
+        *)
+          FORCE_LOGIN=1
+          log "将重新认证并切换到 $SERVER_URL" ;;
+      esac
+    else
+      if [ -t 0 ]; then
+        NO_TTY_HINT="已指定 --yes"
+      else
+        NO_TTY_HINT="stdin 不是终端，无法交互确认"
+      fi
+      die "检测到旧身份指向 ${IDENTITY_SERVER:-未知（无法解析）}，与目标 $SERVER_URL 不一致（$NO_TTY_HINT）。请任选其一：
+  1) 重新认证并切换：bash install.sh --force-login
+  2) 清理旧身份后重装：rm -rf $DATA_DIR
+  3) 另置数据目录：bash install.sh --data-dir <dir>"
+    fi
+  fi
+fi
 
 FETCH=""
 if command -v curl >/dev/null 2>&1; then
@@ -340,13 +422,7 @@ printf 'z /dev/uhid 0660 root uhid -\n' > "$SHARE_DIR/vkey-uhid.conf"
 chmod 0644 "$SHARE_DIR/vkey-uhid.conf"
 log "已安装二进制 $BIN"
 
-NEED_LOGIN=1
-LOGIN_STATE="已完成"
-if [ "$FORCE_LOGIN" = 0 ] && [ -f "$DATA_DIR/identity.json" ]; then
-  NEED_LOGIN=0
-  LOGIN_STATE="已存在本地身份（跳过 login）"
-  log "已安装（检测到 $DATA_DIR/identity.json）：跳过 login（--force-login 可重接）"
-fi
+# 旧身份判定已在下载之前完成（见上），这里只沿用其结果 NEED_LOGIN / LOGIN_STATE。
 
 # 读取敏感输入：不回显、不写入任何文件；脚本本身退出后即失效。
 read_secret() {
@@ -397,6 +473,14 @@ if [ "$NEED_LOGIN" = 1 ]; then
 else
   MK=""
   CODE=""
+fi
+
+# 结尾摘要用：login/pair 可能刚在本脚本中完成，重新读取 identity.json 得到最终身份。
+FINAL_SERVER=""
+FINAL_DEVICE=""
+if [ -f "$DATA_DIR/identity.json" ]; then
+  FINAL_SERVER="$(identity_field server_url)"
+  FINAL_DEVICE="$(identity_field device_name)"
 fi
 
 install_system_integration() {
@@ -508,6 +592,7 @@ vkey 部分安装：部分步骤未完成，安装尚未完全生效
   服务器:    $SERVER_URL
   二进制:    $BIN
   数据目录:  $DATA_DIR
+  本地身份:  ${FINAL_SERVER:-未检测到}${FINAL_DEVICE:+（device=$FINAL_DEVICE）}
   登录:      $LOGIN_STATE
 
 已完成：
@@ -548,6 +633,7 @@ vkey 安装完成
   服务器:    $SERVER_URL
   二进制:    $BIN
   数据目录:  $DATA_DIR
+  本地身份:  ${FINAL_SERVER:-未检测到}${FINAL_DEVICE:+（device=$FINAL_DEVICE）}
   用户服务:  $SERVICE_STATE
 
 重要：需要重新登录一次（组生效）后 daemon 才能打开 /dev/uhid。

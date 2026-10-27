@@ -251,17 +251,26 @@ fn two_devices_share_credentials() -> Result<()> {
         "selftest 未通过:\n{selftest_out}"
     );
     assert!(
-        selftest_out.contains("[2/6] MakeCredential"),
+        selftest_out.contains("[2/8] MakeCredential"),
         "selftest 输出缺少 MakeCredential 步骤:\n{selftest_out}"
     );
 
     // A 本地应同时有 TOTP 与 WebAuthn 条目，且 WebAuthn sign_count 已到 2。
     let a_after = LocalStore::load(&a_dir, unlock_local(&a_dir, &a_identity)?)?;
     assert!(a_after.item_count() >= 2, "A 条目数不足");
+    // selftest 现在会创建两条 webauthn：普通凭据 + rk 可发现凭据。
+    // 普通凭据被 allowList 断言过，sign_count 必须到 2；rk 条目必须是 discoverable。
     let web = a_after
         .items()
-        .find(|i| i.kind == "webauthn")
-        .ok_or_else(|| anyhow!("A 缺少 webauthn 条目"))?;
+        .find(|i| {
+            i.kind == "webauthn"
+                && i.plaintext
+                    .as_ref()
+                    .and_then(|v| v.get("discoverable"))
+                    .and_then(|v| v.as_bool())
+                    != Some(true)
+        })
+        .ok_or_else(|| anyhow!("A 缺少非 discoverable 的 webauthn 条目"))?;
     let web_value = web
         .plaintext
         .as_ref()
@@ -270,6 +279,18 @@ fn two_devices_share_credentials() -> Result<()> {
         web_value.get("sign_count").and_then(|v| v.as_u64()),
         Some(2)
     );
+    let discoverable = a_after
+        .items()
+        .find(|i| {
+            i.kind == "webauthn"
+                && i.plaintext
+                    .as_ref()
+                    .and_then(|v| v.get("discoverable"))
+                    .and_then(|v| v.as_bool())
+                    == Some(true)
+        })
+        .ok_or_else(|| anyhow!("A 缺少 discoverable 的 webauthn 条目"))?;
+    assert!(discoverable.plaintext.is_some(), "rk 条目未解密");
 
     // ---- A 生成配对码 ----
     let pair_out = assert_cli(&a_dir, &["pair-new".into()]);
@@ -349,8 +370,10 @@ fn two_devices_share_credentials() -> Result<()> {
     let request = get_assertion_request(&rp_id, &client_hash, Some(&credential_id));
     let response =
         authenticator.handle_cbor(&[vec![CTAP2_GET_ASSERTION], cbor::encode(&request)].concat());
+    // CTAP2 成功响应 = 状态字节 0x00 + CBOR（Chromium 的 CTAPHID 层按首字节读状态码）。
     assert_eq!(response[0], 0, "B getAssertion 失败: {response:?}");
-    let (assertion, _) = cbor::decode(&response[1..])?;
+    let (assertion, _) =
+        cbor::decode(&response[1..]).context("B getAssertion 应答不是状态码 + CBOR")?;
     // authData 在 key2（Chromium 读取顺序，见 docs/evidence/device_response_converter.cc:242-249）。
     let auth_data = assertion
         .get_int(2)

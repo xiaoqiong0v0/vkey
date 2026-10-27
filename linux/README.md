@@ -167,6 +167,30 @@ VKEY_FEDORA_HOST=afubek@192.168.1.108 VKEY_FEDORA_DIR=~/proj/vkey \
 随后在 Fedora 上按上面「安装」步骤跑 udev + user service，用 Chromium
 做真实 register/auth（`selftest` 不经过 uhid，不能替代浏览器验收）。
 
+## 已知限制 / 安全假设
+
+- **UV 口径 = 「up 即 uv」**：GetInfo 声明 `options.uv=true`，但实现不引入 PIN、
+  polkit 或终端确认；只要本机进程能通过 `/dev/uhid` 发请求，就视为用户已完成验证。
+  **安全假设：本机进程可信**。任何能调用 daemon 的本地进程都可代表用户完成 UV；
+  authData 恒置 `UV(0x04)`，RP 的 `options.uv=false` 不会导致拒绝。
+- **可发现凭据（rk）存储**：GetInfo 声明 `options.rk=true`。MakeCredential 只有收到
+  `options.rk=true` 时，才在条目明文写 `discoverable: true`；未请求 rk 的凭据保持
+  `discoverable: false`。凭据仍按 `(rp_id, user_handle)` 字段保存在既有加密条目中，
+  `private_key` 只以密文落盘/同步。
+- **可发现断言选择策略**：GetAssertion 的 allowList 为空时，只在该 `rp_id` 的
+  `discoverable=true` 条目中选择：优先 `sign_count` 最大者（最近使用）；`sign_count`
+  相同则取本地存储 `items.json` 迭代顺序中的第一个。响应返回
+  `numberOfCredentials(0x05)` 为该 `rp_id` 下的可发现凭据总数，并返回
+  `user(0x04)` 文本键实体 `{"id":bytes,"name"?:text,"displayName"?:text}`。
+  allowList 非空时按 credential_id 匹配，不返回 `user`。
+- **rk 不是 authData 标志位**：WebAuthn/CTAP2 的 authData flags 中 `0x40` 是
+  `AT`（attested credential data included），不是独立的 rk 标记。MakeCredential
+  必须恒置 `AT`，因此 flags 为 `UP|UV|AT = 0x45`；GetAssertion flags 为
+  `UP|UV = 0x05`。GetAssertion 不能置 `0x40`：置位会让 Chromium 的
+  `DecodeAuthenticatorData` 尝试解析 attested data，并把整个响应判为 InvalidCBOR。
+  可发现性由条目 `discoverable` + 空 allowList 的 `user` 实体表达。
+- 仍然**不声明** `clientPin` 与 `plat`（见 `docs/design.md` §8 第 5 条）。
+
 ## 排障
 
 | 现象 | 检查 |

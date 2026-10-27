@@ -10,7 +10,7 @@ use vkey_hid::config;
 use vkey_hid::crypto;
 use vkey_hid::ctap2::authenticator::{
     self, parse_auth_data, Authenticator, CredentialBackend, MemoryBackend, CTAP2_GET_ASSERTION,
-    CTAP2_GET_INFO, CTAP2_MAKE_CREDENTIAL, CTAP2_OK, FLAG_AT_PUBLIC,
+    CTAP2_GET_INFO, CTAP2_MAKE_CREDENTIAL, CTAP2_OK, FLAG_AT_PUBLIC, FLAG_UP, FLAG_UV,
 };
 use vkey_hid::ctap2::cbor::{self, Value};
 use vkey_hid::ctap2::hid::{Ctap2Handler, CtapHid, CTAPHID_CBOR};
@@ -21,6 +21,7 @@ use zeroize::Zeroizing;
 
 const RP_ID: &str = "selftest.invalid";
 const USER_HANDLE: &[u8] = b"vkey-selftest-user";
+const RK_USER_HANDLE: &[u8] = b"vkey-selftest-rk-user";
 
 struct Runner {
     index: usize,
@@ -65,7 +66,7 @@ pub fn run() -> Result<bool> {
 fn run_ephemeral() -> Result<bool> {
     println!("vkey-hid selftest（未找到本地身份：使用内存后端，不落盘、不同步）");
     let mut auth = Authenticator::new(MemoryBackend::new());
-    let mut runner = Runner::new(5);
+    let mut runner = Runner::new(7);
     let ok = suite(&mut auth, &mut runner)?;
     println!("SELFTEST {}", if ok && runner.ok { "PASS" } else { "FAIL" });
     Ok(ok && runner.ok)
@@ -83,7 +84,7 @@ fn run_with_identity(dir: &std::path::Path, identity: &Identity) -> Result<bool>
     let shared_store = Arc::new(Mutex::new(store));
     let backend = StoreBackend::new(shared_store.clone(), sync::noop_trigger());
     let mut auth = Authenticator::new(backend);
-    let mut runner = Runner::new(6);
+    let mut runner = Runner::new(8);
     let suite_ok = suite(&mut auth, &mut runner)?;
 
     // 从后端取回本地存储，检查落盘内容只含密文。
@@ -164,7 +165,7 @@ fn check_items_encrypted(dir: &std::path::Path, master_key: &[u8]) -> Result<()>
 fn suite<B: CredentialBackend>(auth: &mut Authenticator<B>, runner: &mut Runner) -> Result<bool> {
     // 1) GetInfo
     let info_ok = runner.check(
-        "GetInfo（versions 为 array、无 clientPin/rk）",
+        "GetInfo（versions 为 array、rk/up/uv、无 clientPin/plat）",
         check_get_info(auth),
     );
     if !info_ok {
@@ -228,15 +229,54 @@ fn suite<B: CredentialBackend>(auth: &mut Authenticator<B>, runner: &mut Runner)
     // 5) CTAPHID 7609B 分片/重组
     runner.check("CTAPHID 7609B 分片/重组", check_ctaphid_roundtrip());
 
+    // 6) 可发现凭据注册（rk=true）
+    let rk_client_hash = crypto::random_bytes(32)?;
+    let rk_request = authenticator::make_credential_request_with_rk(
+        RP_ID,
+        RK_USER_HANDLE,
+        &rk_client_hash,
+        true,
+    );
+    let rk_response =
+        auth.handle_cbor(&[vec![CTAP2_MAKE_CREDENTIAL], cbor::encode(&rk_request)].concat());
+    let rk_ok = runner.check(
+        "MakeCredential rk=true（discoverable + UP/UV/AT）",
+        check_discoverable_registration(auth, &rk_response),
+    );
+    if !rk_ok {
+        return Ok(false);
+    }
+
+    // 7) 无 allowList 的可发现断言（user 实体 + numberOfCredentials）
+    let expected_discoverable = auth.backend().find(RP_ID, None, true)?.len();
+    let assertion_hash = crypto::random_bytes(32)?;
+    let request = authenticator::get_assertion_request(RP_ID, &assertion_hash, None);
+    let response = auth.handle_cbor(&[vec![CTAP2_GET_ASSERTION], cbor::encode(&request)].concat());
+    runner.check(
+        "GetAssertion 无 allowList（user 实体 + numberOfCredentials）",
+        check_discoverable_assertion(auth, &response, &assertion_hash, expected_discoverable),
+    );
+
     Ok(runner.ok)
+}
+
+/// 解析 CTAP2 成功应答：首字节必须是 `CTAP2_OK`，其后才是 CBOR 载荷。
+///
+/// Chromium 的 CTAPHID 层把响应首字节当状态码读取，成功必须带 `0x00`；
+/// 非 `0x00` 的单字节按错误状态处理。
+fn decode_ok_response(response: &[u8]) -> Result<Value> {
+    match response.first() {
+        Some(&CTAP2_OK) => {}
+        Some(&status) => bail!("CTAP2 错误状态 0x{status:02x}"),
+        None => bail!("CTAP2 应答为空"),
+    }
+    let (value, _) = cbor::decode(&response[1..]).context("成功应答不是状态码 + CBOR")?;
+    Ok(value)
 }
 
 fn check_get_info<B: CredentialBackend>(auth: &mut Authenticator<B>) -> Result<()> {
     let response = auth.handle_cbor(&[CTAP2_GET_INFO]);
-    if response.first() != Some(&CTAP2_OK) {
-        bail!("状态字节不是 0x00: {response:?}");
-    }
-    let (info, _) = cbor::decode(&response[1..])?;
+    let info = decode_ok_response(&response)?;
     let versions = info
         .get_int(1)
         .and_then(Value::as_array)
@@ -251,14 +291,20 @@ fn check_get_info<B: CredentialBackend>(auth: &mut Authenticator<B>) -> Result<(
     if options.get_text("up").and_then(Value::as_bool) != Some(true) {
         bail!("options.up 必须为 true");
     }
+    if options.get_text("rk").and_then(Value::as_bool) != Some(true) {
+        bail!("options.rk 必须为 true");
+    }
+    if options.get_text("uv").and_then(Value::as_bool) != Some(true) {
+        bail!("options.uv 必须为 true");
+    }
+    if options.get_text("plat").is_some() {
+        bail!("不应声明 plat");
+    }
     Ok(())
 }
 
 fn check_make_credential(response: &[u8], _client_hash: &[u8]) -> Result<Value> {
-    if response.first() != Some(&CTAP2_OK) {
-        bail!("状态字节不是 0x00: {response:?}");
-    }
-    let (value, _) = cbor::decode(&response[1..])?;
+    let value = decode_ok_response(response)?;
     if value.get_int(1).and_then(Value::as_text) != Some("none") {
         bail!("attestation fmt 不是 none");
     }
@@ -269,6 +315,12 @@ fn check_make_credential(response: &[u8], _client_hash: &[u8]) -> Result<Value> 
     let parsed = parse_auth_data(auth_data)?;
     if parsed.rp_id_hash != crypto::sha256(RP_ID.as_bytes()) {
         bail!("rpIdHash 不匹配");
+    }
+    if parsed.flags & FLAG_UP == 0 {
+        bail!("MakeCredential flags 缺少 UP");
+    }
+    if parsed.flags & FLAG_UV == 0 {
+        bail!("MakeCredential flags 缺少 UV");
     }
     if parsed.flags & FLAG_AT_PUBLIC == 0 {
         bail!("MakeCredential flags 缺少 AT");
@@ -294,10 +346,7 @@ fn check_get_assertion(
     credential_id: &[u8],
     cose: &Value,
 ) -> Result<Value> {
-    if response.first() != Some(&CTAP2_OK) {
-        bail!("状态字节不是 0x00: {response:?}");
-    }
-    let (value, _) = cbor::decode(&response[1..])?;
+    let value = decode_ok_response(response)?;
     // 外层键位对齐 Chromium ReadCTAPGetAssertionResponse
     // （docs/evidence/device_response_converter.cc:242-274）：1=descriptor，2=authData。
     // descriptor 用文本键 "type"/"id"（.tmp/scratch/156_d.cc:16-17）。
@@ -319,6 +368,12 @@ fn check_get_assertion(
         .and_then(Value::as_bytes)
         .ok_or_else(|| anyhow!("缺少 signature"))?;
     let parsed = parse_auth_data(auth_data)?;
+    if parsed.flags & FLAG_UP == 0 {
+        bail!("GetAssertion flags 缺少 UP");
+    }
+    if parsed.flags & FLAG_UV == 0 {
+        bail!("GetAssertion flags 缺少 UV");
+    }
     if parsed.flags & FLAG_AT_PUBLIC != 0 {
         bail!("GetAssertion authData 不应带 AT");
     }
@@ -330,6 +385,112 @@ fn check_get_assertion(
     authenticator::verify_cose_signature(cose, &message, signature)
         .context("GetAssertion DER 验签失败")?;
     Ok(value)
+}
+
+fn check_discoverable_registration<B: CredentialBackend>(
+    auth: &Authenticator<B>,
+    response: &[u8],
+) -> Result<()> {
+    let value = decode_ok_response(response)?;
+    let auth_data = value
+        .get_int(2)
+        .and_then(Value::as_bytes)
+        .ok_or_else(|| anyhow!("缺少 authData"))?;
+    let parsed = parse_auth_data(auth_data)?;
+    if parsed.flags & FLAG_UP == 0 {
+        bail!("rk 注册 flags 缺少 UP");
+    }
+    if parsed.flags & FLAG_UV == 0 {
+        bail!("rk 注册 flags 缺少 UV");
+    }
+    if parsed.flags & FLAG_AT_PUBLIC == 0 {
+        bail!("rk 注册 flags 缺少 AT");
+    }
+    let credential_id = parsed
+        .credential_id
+        .ok_or_else(|| anyhow!("rk 注册缺少 credentialId"))?;
+    let discoverable = auth.backend().find(RP_ID, None, true)?;
+    let found = discoverable
+        .iter()
+        .find(|cred| cred.credential_id.as_slice() == credential_id)
+        .ok_or_else(|| anyhow!("rk=true 的凭据未以 discoverable 存入后端"))?;
+    if !found.discoverable {
+        bail!("条目 discoverable 字段不是 true");
+    }
+    if found.user_handle.as_slice() != RK_USER_HANDLE {
+        bail!("discoverable 凭据的 user_handle 不匹配");
+    }
+    Ok(())
+}
+
+fn check_discoverable_assertion<B: CredentialBackend>(
+    auth: &Authenticator<B>,
+    response: &[u8],
+    client_hash: &[u8],
+    expected_count: usize,
+) -> Result<()> {
+    let value = decode_ok_response(response)?;
+    let descriptor = value
+        .get_int(1)
+        .ok_or_else(|| anyhow!("缺少 credential descriptor"))?;
+    if descriptor.get_text("type").and_then(Value::as_text) != Some("public-key") {
+        bail!("credential type 不是 public-key");
+    }
+    let credential_id = descriptor
+        .get_text("id")
+        .and_then(Value::as_bytes)
+        .ok_or_else(|| anyhow!("缺少 credentialId"))?;
+    let user = value
+        .get_int(4)
+        .ok_or_else(|| anyhow!("空 allowList 断言必须返回 user 实体"))?;
+    let user_id = user
+        .get_text("id")
+        .and_then(Value::as_bytes)
+        .ok_or_else(|| anyhow!("user 实体缺少 id"))?;
+    let number = value
+        .get_int(5)
+        .and_then(Value::as_i64)
+        .ok_or_else(|| anyhow!("缺少 numberOfCredentials"))?;
+    if number < 0 || number as usize != expected_count {
+        bail!("numberOfCredentials={number}，期望 {expected_count}");
+    }
+    let auth_data = value
+        .get_int(2)
+        .and_then(Value::as_bytes)
+        .ok_or_else(|| anyhow!("缺少 authData"))?;
+    let signature = value
+        .get_int(3)
+        .and_then(Value::as_bytes)
+        .ok_or_else(|| anyhow!("缺少 signature"))?;
+    let parsed = parse_auth_data(auth_data)?;
+    if parsed.flags & FLAG_UP == 0 {
+        bail!("可发现断言 flags 缺少 UP");
+    }
+    if parsed.flags & FLAG_UV == 0 {
+        bail!("可发现断言 flags 缺少 UV");
+    }
+    if parsed.flags & FLAG_AT_PUBLIC != 0 {
+        bail!("GetAssertion authData 不得置 AT(0x40)");
+    }
+    if parsed.rp_id_hash != crypto::sha256(RP_ID.as_bytes()) {
+        bail!("GetAssertion rpIdHash 不匹配");
+    }
+    let ids = vec![credential_id.to_vec()];
+    let selected = auth
+        .backend()
+        .find(RP_ID, Some(&ids), true)?
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow!("返回的 credentialId 不是本地的可发现凭据"))?;
+    if user_id != selected.user_handle.as_slice() {
+        bail!("user 实体的 id 与选中凭据的 user_handle 不一致");
+    }
+    let cose = authenticator::cose_key_from_pkcs8(&selected.private_key_der)?;
+    let mut message = auth_data.to_vec();
+    message.extend_from_slice(client_hash);
+    authenticator::verify_cose_signature(&cose, &message, signature)
+        .context("可发现断言 DER 验签失败")?;
+    Ok(())
 }
 
 fn check_ctaphid_roundtrip() -> Result<()> {

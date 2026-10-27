@@ -681,8 +681,14 @@ impl StoreBackend {
 }
 
 impl CredentialBackend for StoreBackend {
-    fn find(&self, rp_id: &str, allow: Option<&[Vec<u8>]>) -> Result<Option<CredentialData>> {
+    fn find(
+        &self,
+        rp_id: &str,
+        allow: Option<&[Vec<u8>]>,
+        discoverable_only: bool,
+    ) -> Result<Vec<CredentialData>> {
         let store = self.store.lock().map_err(|_| anyhow!("本地存储锁中毒"))?;
+        let mut out = Vec::new();
         for item in store.items() {
             if item.kind != "webauthn" || item.rp_id != rp_id || item.is_deleted() {
                 continue;
@@ -693,14 +699,17 @@ impl CredentialBackend for StoreBackend {
             let Some(cred) = credential_from_value(item.id.clone(), value) else {
                 continue;
             };
+            if discoverable_only && !cred.discoverable {
+                continue;
+            }
             if let Some(allow) = allow {
                 if !allow.is_empty() && !allow.iter().any(|id| id == &cred.credential_id) {
                     continue;
                 }
             }
-            return Ok(Some(cred));
+            out.push(cred);
         }
-        Ok(None)
+        Ok(out)
     }
 
     fn exists(&self, rp_id: &str, credential_ids: &[Vec<u8>]) -> Result<bool> {
@@ -793,6 +802,10 @@ fn credential_from_value(item_id: String, value: &Value) -> Option<CredentialDat
         .get("sign_count")
         .and_then(|v| v.as_u64())
         .unwrap_or(0) as u32;
+    let discoverable = value
+        .get("discoverable")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     Some(CredentialData {
         item_id,
         rp_id,
@@ -802,6 +815,7 @@ fn credential_from_value(item_id: String, value: &Value) -> Option<CredentialDat
         display_name,
         private_key_der: Zeroizing::new(private_key_der),
         sign_count,
+        discoverable,
     })
 }
 
@@ -827,7 +841,7 @@ fn new_credential_json(new: &NewCredential, item_id: &str, now: i64) -> Result<V
         "private_key": crypto::b64_encode(&new.private_key_der),
         "sign_count": new.sign_count,
         "transports": ["internal"],
-        "discoverable": false,
+        "discoverable": new.discoverable,
         "notes": format!("vkey 自动创建（item {item_id}）"),
         "created_at": now,
         "updated_at": now,

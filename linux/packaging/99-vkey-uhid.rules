@@ -1,0 +1,5 @@
+# vkey：让普通用户直接打开 /dev/uhid 与虚拟设备的 /dev/hidraw*
+# 安装：sudo install -m644 99-vkey-uhid.rules /etc/udev/rules.d/ && sudo udevadm control --reload-rules && sudo udevadm trigger
+# 前置：sudo groupadd -f uhid && sudo usermod -aG uhid <用户>（重新登录后生效）
+KERNEL=="uhid", SUBSYSTEM=="misc", MODE="0660", GROUP="uhid"
+KERNEL=="hidraw*", ATTRS{name}=="Virtual FIDO2 Key", MODE="0660", GROUP="uhid"

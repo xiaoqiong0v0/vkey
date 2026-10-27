@@ -1,0 +1,21 @@
+[Unit]
+Description=vkey FIDO2 虚拟安全密钥（uhid + 零知识同步）
+Documentation=https://github.com/xiaoqiong0v0/AnyCode
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+# 二选一：
+#   源码安装（cargo install --path linux）→ %h/.cargo/bin/vkey-hid
+#   系统安装                                → /usr/local/bin/vkey-hid
+ExecStart=%h/.cargo/bin/vkey-hid run
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=10
+# 策略要求主密码时，systemd-ask-password 会通过 user manager 的 ask-password
+# agent 弹窗；若图形会话没有 agent，请改为手动前台运行一次 `vkey-hid run`。
+Environment=RUST_BACKTRACE=1
+
+[Install]
+WantedBy=default.target

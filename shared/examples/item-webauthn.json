@@ -1,0 +1,18 @@
+{
+  "kind": "webauthn",
+  "rp_id": "example.com",
+  "rp_name": "Example",
+  "user_handle": "YWxpY2UtMDAx",
+  "username": "alice",
+  "display_name": "Alice",
+  "credential_id": "M9HCCwug9BJ6tdhNArxdUw",
+  "alg": -7,
+  "private_key": "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgMpmqn5_n1JWnYpJNHKDx2j0FNko1ZO0eu0_pV_U4FT-hRANCAAToGeDT-D7moREHnsWzPF722NaMOIFkx8KIGWUkAfgVmol5gGBXo2Euba1MQ3OLWFOFrpBa5rNJgGvwLjbFrwyB",
+  "sign_count": 0,
+  "transports": [
+    "internal"
+  ],
+  "discoverable": false,
+  "notes": "示例条目（明文，非密文）；private_key 是一次性测试密钥，禁止用于生产",
+  "created_at": 1761436800
+}

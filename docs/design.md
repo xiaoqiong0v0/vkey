@@ -101,30 +101,38 @@ GET /dl/<artifact>         # 预构建产物：vkey-hid-linux-x86_64.tar.gz、vk
 ### 4.2 数据模型（零知识）
 
 ```
-users(id, username, verifier, kdf_salt, created_at)          -- verifier = Argon2id(master_pw) 派生出的登录校验值
-devices(id, user_id, name, platform, pubkey_ed25519, created_at, last_seen)
+users(id, username, verifier, pw_salt, wrapped_key, created_at)
+devices(id, user_id, name, platform, pubkey_ed25519, revoked_at, created_at, last_seen)
 items(id, user_id, kind, rp_id, ciphertext, nonce, version, updated_at, deleted_at)
   kind ∈ {totp, webauthn}
-  ciphertext = AES-256-GCM(item_key, {secret | private_key, user_handle, sign_count, rp_id, username})
+  ciphertext = AES-256-GCM(item_key, {...})
+item_conflicts(id, user_id, item_id, ciphertext, nonce, version, updated_at)  -- LWW 落败副本
 audit(id, user_id, device_id, action, ts)                    -- 仅元数据，不含明文
 ```
 
-- 主密钥：`master_key = Argon2id(master_pw, kdf_salt)`，**永不上传**；`verifier` 用于登录校验（不可逆推出主密钥）
-- 服务端只见密文；`rp_id` 明文保留用于检索/去重（可接受，或改为 HMAC(rp_id) 盲索引）
-- **冲突策略**：`version` 单调递增，LWW（last-write-wins）+ 冲突留副本，UI 提示
+- **`master_key` 是账号级 32B 随机值**（2026-10-26 修正：原方案从主密码派生，无法支持「默认无密码 + 多设备共享」），**永不上传**
+- `verifier = HKDF-SHA256(master_key, salt="vkey-verifier", info=username)` → 上传，仅用于登录校验
+- **主密码是可选的包裹层**：启用时 `wrapped_key = AES-256-GCM(KEK, master_key)`，`KEK = Argon2id(pw, pw_salt, m=64MiB, t=3, p=1)`；`pw_salt`/`wrapped_key` 存服务端（服务端无法解），新设备凭密码取回 `master_key`
+- **是否强制主密码 = 服务端策略**（`GET /api/v1/policy`，客户端每次启动必查；本地改配置不生效）。默认 `require_master_pw=false`
+- 未启用主密码时，`master_key` 由设备本地密钥文件包裹存盘（`0600`）
+- 条目加密：`item_key = HKDF-SHA256(master_key, salt="vkey-item", info=item_id)`；`AES-256-GCM`，12B 随机 nonce，AAD=`vkey-item|`+item_id
+- 服务端只见密文；`rp_id` 明文保留用于检索/去重
+- **冲突策略**：`version` 由服务端单调分配，LWW（last-write-wins），落败副本进 `item_conflicts`
 
 ### 4.3 API（最小集）
 
 ```
-POST /api/v1/auth/token          {username, verifier}        -> {token, kdf_salt}
-GET  /api/v1/items?since=<ver>                                -> [{id, kind, rp_id, ct, version}]
-POST /api/v1/items                                            {id, kind, rp_id, ct, version}
-POST /api/v1/devices/register     {name, platform, pubkey}    -> {device_id}
-POST /api/v1/pair                 (一次性配对码，用于手机/新机器)
+GET  /api/v1/policy                                           -> {require_master_pw, kdf:{m,t,p}, min_client_version}
+POST /api/v1/auth/token        {username, verifier}           -> {token, device_id, pw_salt, wrapped_key}
+GET  /api/v1/items?since=<ver>                                -> [{id, kind, rp_id, ct, nonce, version, updated_at}]
+POST /api/v1/items             {items:[{id, kind, rp_id, ct, nonce, base_version, updated_at}]}
+POST /api/v1/devices/register  {name, platform, pubkey}       -> {device_id}
+POST /api/v1/pair/new          (需鉴权)                        -> {code_id, code, expires_at}
+POST /api/v1/pair/claim        {code, name, platform, pubkey} -> {token, device_id, blob, pw_salt}
 GET  /api/v1/health
 ```
 
-鉴权：device token（`Authorization: Bearer`）+ 设备公钥签名（防 token 泄漏后直接拉库）。
+鉴权：`Authorization: Bearer <device_token>` + `X-Vkey-Sig`（设备 Ed25519 对 `METHOD\nPATH\nsha256(body)\nts` 签名）+ `X-Vkey-Ts`（±120s），防 token 泄漏后直接拉库。
 
 ---
 
@@ -191,6 +199,8 @@ GET  /api/v1/health
 8. 声明 **`rk:true`** 且 RP 请求 residentKey → Chrome 静默超时
 9. ES256 签名必须是 **DER**（不是 raw r‖s）
 10. CTAP2 错误应答只能是**单个状态字节**
+11. **getAssertion 应答外层键位是 `1=credential / 2=authData / 3=signature / 5=numberOfCredentials`**（不是 1=authData），且 descriptor 与 user 实体**内层用文本键**：`{"type":"public-key","id":<bytes>}`、`{"id":<bytes>}`。依据 Chrome 156 `public_key_credential_descriptor.cc`（`kCredentialIdKey="id"`、`kCredentialTypeKey="type"`）与 `device_response_converter.cc:242-274`；键位或内层写错 → Chrome 合成 `kCtap2ErrInvalidCBOR(0x12)` 且 JS Promise 永不 settle
+12. **不做 UV 且非 discoverable 时，getAssertion 不得返回 user 实体（0x04）**，否则 `get_assertion_request_handler.cc:138-143` 判非法，回 `NotAllowedError`
 
 ---
 
@@ -199,7 +209,7 @@ GET  /api/v1/health
 | 阶段 | 内容 | 验收 |
 |---|---|---|
 | M0 ✅ | Linux uhid 虚拟密钥 spike | Chromium register+auth 成功（已完成） |
-| M1 | 服务端 vkeyd（账号/同步/引导脚本）+ Linux daemon 持久化 | 两台 Linux 机器共享同一份 passkey |
+| M1 ✅ | 服务端 vkeyd（账号/同步/配对/主密码包裹/引导脚本）+ Linux daemon（uhid + CTAP2 + 同步） | 两台 Linux 共享同一份 passkey：Fedora 真机 Chromium register 231ms / auth 15ms 通过；第二设备 `pair` 领取后 `sync` 解密成功 |
 | M2 | 浏览器扩展（兜底）+ Windows Plugin API PoC | Win11 下 Chrome 可直接用 |
 | M3 | Android TOTP 端 + 扫码配对 | 手机加码桌面可见 |
 | M4 | 打包交付：install.sh / install.ps1 / pair 页 / TLS | 新机器一条命令接入 |
@@ -223,8 +233,16 @@ vkey/
 
 ---
 
-## 11. 待你决策（开工前）
+## 11. 已定决策（2026-10-26）
 
-1. **项目名**：暂定 `vkey`（可换）
-2. **服务端语言**：建议 Go；若你更熟 Rust/Node 可改
-3. **第一版是否只做「Linux + 服务端」**，Windows/Android 依次跟进（建议这样，最快形成闭环）
+| 项 | 决定 |
+|---|---|
+| 项目名 | `vkey` |
+| 服务端语言 | **Go 单二进制**（纯 Go sqlite 驱动 `modernc.org/sqlite`，便于交叉编译） |
+| 第一版范围 | **服务端 vkeyd + Linux daemon**（M1）；Windows/Android 依次跟进 |
+| 代码布局 | 根下并列子目录 `server/ linux/ windows/ extension/ android/ shared/`，`docs/ spike/` 原位 |
+| 主密钥模型 | 32B 随机 `master_key`（见 §4.2），主密码为可选包裹层 |
+| 主密码策略 | 服务端下发，**默认不要求** |
+| 部署目标 | `ecs-user@47.97.78.223:~/work/vkey/`，nginx 反代 + certbot，域名 `vkey.xiaoqiong0v0.cn` |
+| 机器 B 验收 | Fedora 上 podman 容器（`--device /dev/uhid`）跑完整 Chrome；Kali WSL 做同步/解密交叉验证（WSL2 内核 `CONFIG_UHID=n`，无法跑 HID 全链路） |
+| 工具链 | Go 1.27.3（mise，项目 `mise.toml` 钉版）；Rust 在 Fedora 原生构建 |

@@ -1,0 +1,53 @@
+{
+  "generated_by": "server/cmd/genvectors",
+  "vectors": [
+    {
+      "name": "get_items_since",
+      "inputs": {
+        "body_utf8": "",
+        "device_key_seed_hex": "707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f",
+        "method": "GET",
+        "request_uri": "/api/v1/items?since=42",
+        "ts": 1761436800
+      },
+      "expected": {
+        "body_sha256_hex": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "device_pubkey_b64url": "HOVqSMgv-ZFioUvFRGEmdOXWH7kxfmXUBVeA_by03DU",
+        "signature_b64url": "ljvWXlZHKo-dTIXvE5tgBwIJKPniStBo0ka4xw5zm0_Te3zd4lI4Z0qabDGcKdhQbxCXcSF_6xEAaeUDnTPECg",
+        "signing_string_utf8": "GET\n/api/v1/items?since=42\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n1761436800"
+      }
+    },
+    {
+      "name": "post_items",
+      "inputs": {
+        "body_utf8": "{\"items\":[]}",
+        "device_key_seed_hex": "707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f",
+        "method": "POST",
+        "request_uri": "/api/v1/items",
+        "ts": 1761436800
+      },
+      "expected": {
+        "body_sha256_hex": "eef46741adfc3a9f76294d3b78f37a45f113092ac9d44ee77c7a038a88ff09a1",
+        "device_pubkey_b64url": "HOVqSMgv-ZFioUvFRGEmdOXWH7kxfmXUBVeA_by03DU",
+        "signature_b64url": "0ECZhKsIsTIj87H1KyxGpF3V4aHpa_kG2zjF1dyCJ6xXNjxKLZj0MWEcPJkZ1_ZRU3RRcRJnYgNAemfC2b0SBg",
+        "signing_string_utf8": "POST\n/api/v1/items\neef46741adfc3a9f76294d3b78f37a45f113092ac9d44ee77c7a038a88ff09a1\n1761436800"
+      }
+    },
+    {
+      "name": "post_pair_claim",
+      "inputs": {
+        "body_utf8": "{\"code\":\"ABCD-EFGH\",\"name\":\"phone\",\"platform\":\"android\",\"pubkey\":\"AAAA\"}",
+        "device_key_seed_hex": "707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f",
+        "method": "POST",
+        "request_uri": "/api/v1/pair/claim",
+        "ts": 1761436900
+      },
+      "expected": {
+        "body_sha256_hex": "2d3da019b50387bbd649aaae917de87f6a00393642307a5854ac2dcd757f2da5",
+        "device_pubkey_b64url": "HOVqSMgv-ZFioUvFRGEmdOXWH7kxfmXUBVeA_by03DU",
+        "signature_b64url": "JVoBlSWjF4XT93J2Mzix8ffaErA07aCC8iyVtYYVKnp1B1sWVqqISEjEvNvBV3N-b_L7X98tyIztpfZ47eepBg",
+        "signing_string_utf8": "POST\n/api/v1/pair/claim\n2d3da019b50387bbd649aaae917de87f6a00393642307a5854ac2dcd757f2da5\n1761436900"
+      }
+    }
+  ]
+}

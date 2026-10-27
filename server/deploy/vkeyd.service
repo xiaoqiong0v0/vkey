@@ -1,0 +1,43 @@
+# vkeyd systemd unit —— 与实际 ECS 部署一致。
+# 安装：sudo cp server/deploy/vkeyd.service /etc/systemd/system/vkeyd.service
+#       sudo systemctl daemon-reload && sudo systemctl enable --now vkeyd
+# 布局：/home/ecs-user/work/vkey/{bin/vkeyd,data/vkeyd.db}（数据目录与二进制分离）。
+[Unit]
+Description=vkeyd - vkey zero-knowledge sync server
+Documentation=https://vkey.xiaoqiong0v0.cn/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 与部署用户一致；不要用 root。
+User=ecs-user
+Group=ecs-user
+SupplementaryGroups=
+# 工作目录独立于二进制目录，便于 ReadWritePaths 收紧到只写数据。
+WorkingDirectory=/home/ecs-user/work/vkey/data
+# 库文件与 -wal/-shm 只允许属主读写。
+UMask=0077
+# 只监听回环，TLS 与公网入口由 nginx 承担（端口必须与 nginx 的 proxy_pass 一致）。
+ExecStart=/home/ecs-user/work/vkey/bin/vkeyd serve --db /home/ecs-user/work/vkey/data/vkeyd.db --listen 127.0.0.1:3150 --domain vkey.xiaoqiong0v0.cn
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=15
+
+# 加固：ProtectSystem=strict 把整个文件系统设为只读，只有 ReadWritePaths 可写。
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/ecs-user/work/vkey/data
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+ProtectKernelModules=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=yes
+LockPersonality=yes
+# 纯用户态进程，不需要任何 capability。
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,11 @@
+{
+  "kind": "totp",
+  "label": "alice@example.com",
+  "issuer": "Example",
+  "secret": "JBSWY3DPEHPK3PXP",
+  "algorithm": "SHA1",
+  "digits": 6,
+  "period": 30,
+  "notes": "示例条目（明文，非密文）",
+  "created_at": 1761436800
+}

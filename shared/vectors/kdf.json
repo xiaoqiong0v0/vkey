@@ -1,0 +1,48 @@
+{
+  "generated_by": "server/cmd/genvectors",
+  "vectors": [
+    {
+      "name": "verifier",
+      "inputs": {
+        "master_key_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+        "username": "default"
+      },
+      "expected": {
+        "verifier_b64url": "WiOlndz6Jpt8b8PIGeUfGCsNDInPSkG3kSZI-mDMlOg"
+      }
+    },
+    {
+      "name": "item_key",
+      "inputs": {
+        "item_id": "01J9Z6Q3R8T5V7X9Y2B4C6D8E0",
+        "master_key_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "expected": {
+        "item_key_b64url": "5-OPZUdb2lYbVnapqBVQIe6r_tk1f54raGwZeT3TJa8"
+      }
+    },
+    {
+      "name": "pair_kek",
+      "inputs": {
+        "code_hex": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+        "code_id": "pair-20261026-demo"
+      },
+      "expected": {
+        "kek_b64url": "5sxcTLNLTFOx0mUOOE6yIUA-uGkqMVCk5lY8tu-9aTI"
+      }
+    },
+    {
+      "name": "argon2id_kek",
+      "inputs": {
+        "m": 65536,
+        "p": 1,
+        "password": "correct horse battery staple",
+        "pw_salt_hex": "10101010101010101010101010101010",
+        "t": 3
+      },
+      "expected": {
+        "kek_b64url": "FEGSfi7pPz_AravHZ_5PocSCV4TACUq5trvb7PrRNQQ"
+      }
+    }
+  ]
+}

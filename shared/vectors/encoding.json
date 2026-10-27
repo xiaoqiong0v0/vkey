@@ -1,0 +1,26 @@
+{
+  "generated_by": "server/cmd/genvectors",
+  "vectors": [
+    {
+      "name": "master_key_encoding",
+      "inputs": {
+        "master_key_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "expected": {
+        "b32_nopad_upper": "AAAQEAYEAUDAOCAJBIFQYDIOB4IBCEQTCQKRMFYYDENBWHA5DYPQ",
+        "b64url": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+      }
+    },
+    {
+      "name": "pair_code_encoding",
+      "inputs": {
+        "code_hex": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f"
+      },
+      "expected": {
+        "code_b32_nopad_upper": "IBAUEQ2EIVDEOSCJJJFUYTKOJ5IFCUSTKRKVMV2YLFNFWXC5LZPQ",
+        "code_display": "IBAU-EQ2E-IVDE-OSCJ-JJFU-YTKO-J5IF-CUST-KRKV-MV2Y-LFNF-WXC5-LZPQ",
+        "code_hash_hex": "ca2a4fe727faaecf16ecd130a86e0885c5540c05375340445071c0657555fd42"
+      }
+    }
+  ]
+}

@@ -1,0 +1,42 @@
+[package]
+name = "vkey-hid"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+description = "vkey Linux 客户端：虚拟 FIDO2 密钥 + 零知识条目同步"
+license = "MIT"
+
+[lib]
+name = "vkey_hid"
+path = "src/lib.rs"
+
+[[bin]]
+name = "vkey-hid"
+path = "src/main.rs"
+
+[dependencies]
+aes-gcm = "0.10"
+anyhow = "1"
+argon2 = "0.5"
+base64 = "0.22"
+clap = { version = "4", features = ["derive"] }
+ecdsa = { version = "0.16", features = ["der", "signing", "verifying"] }
+ed25519-dalek = { version = "2", features = ["zeroize"] }
+hex = "0.4"
+hkdf = "0.12"
+p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
+rand = "0.8"
+rpassword = "7"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+subtle = "2"
+thiserror = "2"
+ureq = { version = "2", features = ["json"] }
+zeroize = { version = "1", features = ["zeroize_derive"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"

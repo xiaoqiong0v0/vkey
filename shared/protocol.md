@@ -417,7 +417,35 @@ LWW（last-write-wins）规则：
 - 吊销当前设备自身也允许（请求完成即失效）。
 - 错误：400 `invalid_device`；401（鉴权）；404 `device_not_found`。
 
-### 4.10 `POST /api/v1/pair/new`（签名）
+### 4.10 `GET /api/v1/devices`（签名）
+
+响应：
+
+```json
+{
+  "devices": [
+    {
+      "id": "base64url(16B)", "name": "desk-linux", "platform": "linux",
+      "created_at": 1761436800, "last_seen": 1761437400, "current": true
+    }
+  ]
+}
+```
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `id` | string | 设备 id，base64url(16B) |
+| `name` / `platform` | string | 注册/认证时的设备名与平台 |
+| `created_at` | int | 设备创建时间（unix 秒） |
+| `last_seen` | int | 最近一次签名请求通过的时间（unix 秒） |
+| `current` | bool | 是否为发起本次请求的设备（按 token 解析出的设备 id 比对） |
+
+- 只返回本账号**未吊销**设备，按 `last_seen` 降序（同值按 `created_at` 升序）。
+- **不返回公钥、token 与 `token_hash`**；已吊销设备不出现在列表中。
+- 只读接口，不写审计。
+- 错误：401（鉴权）。
+
+### 4.11 `POST /api/v1/pair/new`（签名）
 
 请求：
 
@@ -451,7 +479,7 @@ LWW（last-write-wins）规则：
 - 错误：400 `invalid_code_id`/`invalid_code`/`invalid_blob`/`invalid_pw_salt`；
   401（鉴权）；409 `code_id_exists`；413 `body_too_large`。
 
-### 4.11 `POST /api/v1/pair/claim`（免鉴权，限流 60 次/分钟/IP）
+### 4.12 `POST /api/v1/pair/claim`（免鉴权，限流 60 次/分钟/IP）
 
 请求：
 
@@ -483,7 +511,7 @@ LWW（last-write-wins）规则：
 - 错误：400 `invalid_code`/`invalid_pubkey`/`invalid_device`；404 `code_not_found`；
   409 `code_used`；410 `code_expired`；413 `body_too_large`；429 `rate_limited`。
 
-### 4.12 页面与脚本（免鉴权）
+### 4.13 页面与脚本（免鉴权）
 
 | 方法/路径 | 说明 |
 |---|---|
@@ -535,6 +563,9 @@ LWW（last-write-wins）规则：
 | `algorithm` | string | 否 | `SHA1` | `SHA1` / `SHA256` / `SHA512` |
 | `digits` | int | 否 | `6` | 6..8 |
 | `period` | int | 否 | `30` | 秒，>0 |
+
+**外层 `rp_id` 约定**：`kind = "totp"` 的条目，外层 `items.rp_id` **固定为 `"totp"`**，
+不随 `issuer` 变化；三端（Go 服务端、Rust/Linux daemon、Android 客户端）必须一致。
 
 样例：`shared/examples/item-totp.json`
 

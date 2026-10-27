@@ -98,6 +98,34 @@ func (s *Store) DeviceByTokenHash(ctx context.Context, tokenHash []byte) (*Devic
 	return &d, nil
 }
 
+// ListDevices 返回账号下全部未吊销设备，按 last_seen 降序（同值按 created_at 升序）。
+//
+// 只读取列表展示所需的元数据列：公钥与 token 哈希不出库，避免上层误用。
+func (s *Store) ListDevices(ctx context.Context, userID string) ([]Device, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, name, platform, created_at, last_seen
+		 FROM devices WHERE user_id = ? AND revoked_at IS NULL
+		 ORDER BY last_seen DESC, created_at ASC`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("store: 查询设备列表失败: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	devices := make([]Device, 0, 8)
+	for rows.Next() {
+		var d Device
+		if err := rows.Scan(&d.ID, &d.Name, &d.Platform, &d.CreatedAt, &d.LastSeen); err != nil {
+			return nil, fmt.Errorf("store: 读取设备列表失败: %w", err)
+		}
+		d.UserID = userID
+		devices = append(devices, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: 读取设备列表失败: %w", err)
+	}
+	return devices, nil
+}
+
 // RevokeDevice 吊销设备并清空其 token；设备不存在或已吊销时返回 ErrNotFound。
 func (s *Store) RevokeDevice(ctx context.Context, userID, deviceID string, now int64) error {
 	res, err := s.db.ExecContext(ctx,

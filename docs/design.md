@@ -214,7 +214,7 @@ GET  /api/v1/health
 | M0 ✅ | Linux uhid 虚拟密钥 spike | Chromium register+auth 成功（已完成） |
 | M1 ✅ | 服务端 vkeyd（账号/同步/配对/主密码包裹/引导脚本）+ Linux daemon（uhid + CTAP2 + 同步） | 两台 Linux 共享同一份 passkey：Fedora 真机 Chromium register 231ms / auth 15ms 通过；第二设备 `pair` 领取后 `sync` 解密成功 |
 | M2 | 浏览器扩展（兜底）+ Windows Plugin API PoC | Win11 下 Chrome 可直接用 |
-| M3 | Android TOTP 端 + 扫码配对 | 手机加码桌面可见 |
+| M3 | **Android 第一版 = TOTP 管理器**（`minSdk 26`、强制恢复码、TOTP 外层 `rp_id="totp"`、新增 `GET /api/v1/devices` 设备列表）；详细方案见 **`docs/android.md`** | 手机加码桌面可见 |
 | M4 | 打包交付：install.sh / install.ps1 / pair 页 / TLS | 新机器一条命令接入 |
 | M5（可选） | Android CredentialProviderService、蓝牙 HID 输码 | ROM 支持时启用 |
 

@@ -87,6 +87,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("DELETE /api/v1/auth/password", s.withAuth(s.handleDeletePassword))
 	mux.HandleFunc("POST /api/v1/items", s.withAuth(s.handlePostItems))
 	mux.HandleFunc("GET /api/v1/items", s.withAuth(s.handleGetItems))
+	mux.HandleFunc("GET /api/v1/devices", s.withAuth(s.handleDeviceList))
 	mux.HandleFunc("POST /api/v1/devices/register", s.withAuth(s.handleDeviceRegister))
 	mux.HandleFunc("POST /api/v1/devices/revoke", s.withAuth(s.handleDeviceRevoke))
 	mux.HandleFunc("POST /api/v1/pair/new", s.withAuth(s.handlePairNew))
@@ -96,7 +97,7 @@ func (s *Server) routes() http.Handler {
 	for _, p := range []string{
 		"/api/v1/policy", "/api/v1/health", "/api/v1/auth/token",
 		"/api/v1/auth/password",
-		"/api/v1/items", "/api/v1/devices/register", "/api/v1/devices/revoke",
+		"/api/v1/items", "/api/v1/devices", "/api/v1/devices/register", "/api/v1/devices/revoke",
 		"/api/v1/pair/new", "/api/v1/pair/claim",
 	} {
 		mux.HandleFunc(p, s.handleMethodNotAllowed)
@@ -184,6 +185,9 @@ func (s *Server) handleAPINotFound(w http.ResponseWriter, r *http.Request) {
 func allowedMethods(path string) string {
 	if path == "/api/v1/items" {
 		return "GET, POST"
+	}
+	if path == "/api/v1/devices" {
+		return "GET"
 	}
 	if path == "/api/v1/auth/password" {
 		return "POST, DELETE"

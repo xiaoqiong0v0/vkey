@@ -2,10 +2,90 @@ package api_test
 
 import (
 	"net/http"
+	"strings"
 	"testing"
+	"time"
 
 	"xiaoqiong0v0.cn/vkey/server/internal/crypto"
 )
+
+// deviceListWire 是 GET /api/v1/devices 的单台设备线上形式。
+type deviceListWire struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Platform  string `json:"platform"`
+	CreatedAt int64  `json:"created_at"`
+	LastSeen  int64  `json:"last_seen"`
+	Current   bool   `json:"current"`
+}
+
+// deviceListGet 是 GET /api/v1/devices 的响应。
+type deviceListGet struct {
+	Devices []deviceListWire `json:"devices"`
+}
+
+// TestDeviceList 覆盖 GET /api/v1/devices 的鉴权、响应形状、current 标记、
+// last_seen 降序与吊销过滤，并断言不泄漏公钥/token。
+func TestDeviceList(t *testing.T) {
+	e := newEnv(t)
+	a := e.enroll("desk", "linux")
+	b := e.enroll("phone", "android")
+
+	// 无签名 → 401。
+	requireStatus(t, e.getNoAuth("/api/v1/devices"), http.StatusUnauthorized)
+
+	// 把 B 的 last_seen 调到未来，确保降序断言不受 A 本次请求刷新自身 last_seen 影响。
+	if _, err := e.st.DB().Exec(
+		`UPDATE devices SET last_seen = ? WHERE id = ?`, time.Now().Unix()+1000, b.ID); err != nil {
+		t.Fatalf("更新 last_seen 失败: %v", err)
+	}
+
+	resp := e.signedDo(a, http.MethodGet, "/api/v1/devices", nil)
+	requireStatus(t, resp, http.StatusOK)
+	var out deviceListGet
+	decode(t, resp, &out)
+	if len(out.Devices) != 2 {
+		t.Fatalf("应返回 2 台设备，实际 %d: %s", len(out.Devices), resp.body)
+	}
+	// last_seen 降序：B 在前。
+	if out.Devices[0].ID != b.ID || out.Devices[1].ID != a.ID {
+		t.Fatalf("应按 last_seen 降序排列: %+v", out.Devices)
+	}
+	// current 只标记发起本次请求的设备。
+	for _, d := range out.Devices {
+		if want := d.ID == a.ID; d.Current != want {
+			t.Fatalf("设备 %s 的 current=%v，期望 %v", d.ID, d.Current, want)
+		}
+	}
+	// 字段形状与取值。
+	self := out.Devices[1]
+	if self.Name != "desk" || self.Platform != "linux" {
+		t.Fatalf("设备字段不符: %+v", self)
+	}
+	if self.CreatedAt <= 0 || self.LastSeen <= 0 {
+		t.Fatalf("created_at/last_seen 应为正数: %+v", self)
+	}
+	// 不泄漏公钥与 token（断言响应体不含这些字段名）。
+	body := string(resp.body)
+	for _, banned := range []string{"pubkey", "token"} {
+		if strings.Contains(body, banned) {
+			t.Fatalf("响应体不应包含 %q: %s", banned, body)
+		}
+	}
+
+	// 吊销 B 后列表只剩 A。
+	requireStatus(t, e.postAuthed(a, "/api/v1/devices/revoke", map[string]any{"device_id": b.ID}), http.StatusOK)
+	after := e.signedDo(a, http.MethodGet, "/api/v1/devices", nil)
+	requireStatus(t, after, http.StatusOK)
+	var afterOut deviceListGet
+	decode(t, after, &afterOut)
+	if len(afterOut.Devices) != 1 || afterOut.Devices[0].ID != a.ID {
+		t.Fatalf("吊销后应只剩当前设备: %s", after.body)
+	}
+	if strings.Contains(string(after.body), b.ID) {
+		t.Fatalf("吊销的设备不应再出现: %s", after.body)
+	}
+}
 
 // TestDeviceRegisterAndRevoke 覆盖 devices/register 与 devices/revoke 的完整链路。
 func TestDeviceRegisterAndRevoke(t *testing.T) {

@@ -25,6 +25,47 @@ type deviceRevokeRequest struct {
 	DeviceID string `json:"device_id"`
 }
 
+// deviceListItem 是 GET /api/v1/devices 中的单台设备。
+//
+// 只暴露列表展示所需的元数据：不含公钥、token 与 token_hash。
+type deviceListItem struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Platform  string `json:"platform"`
+	CreatedAt int64  `json:"created_at"`
+	LastSeen  int64  `json:"last_seen"`
+	Current   bool   `json:"current"`
+}
+
+// deviceListResponse 是 GET /api/v1/devices 的响应体。
+type deviceListResponse struct {
+	Devices []deviceListItem `json:"devices"`
+}
+
+// handleDeviceList 返回本账号全部未吊销设备（需鉴权）。
+//
+// current 标记发起本次请求的设备；排序沿用 store 的 last_seen 降序。
+func (s *Server) handleDeviceList(w http.ResponseWriter, r *http.Request, dev *store.Device) {
+	devices, err := s.store.ListDevices(r.Context(), dev.UserID)
+	if err != nil {
+		s.logErr("查询设备列表失败", err)
+		writeErr(w, http.StatusInternalServerError, "internal", "服务端内部错误")
+		return
+	}
+	items := make([]deviceListItem, 0, len(devices))
+	for _, d := range devices {
+		items = append(items, deviceListItem{
+			ID:        d.ID,
+			Name:      d.Name,
+			Platform:  d.Platform,
+			CreatedAt: d.CreatedAt,
+			LastSeen:  d.LastSeen,
+			Current:   d.ID == dev.ID,
+		})
+	}
+	writeJSON(w, http.StatusOK, deviceListResponse{Devices: items})
+}
+
 // handleDeviceRegister 预注册设备公钥（需鉴权）。
 //
 // 说明：该端点只登记公钥，不签发 token；新设备仍需用 verifier 调用

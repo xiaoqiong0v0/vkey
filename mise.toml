@@ -1,2 +1,6 @@
 [tools]
 go = "1.27.3"
+
+[env]
+ANDROID_HOME = "D:\\Sdk\\Android"
+JAVA_HOME = "C:\\Users\\king-\\AppData\\Local\\mise\\installs\\java\\temurin-17.0.20+101"

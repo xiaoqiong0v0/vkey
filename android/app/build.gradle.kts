@@ -66,6 +66,8 @@ dependencies {
     implementation("androidx.camera:camera-lifecycle:1.4.0")
     implementation("androidx.camera:camera-view:1.4.0")
     implementation("com.google.mlkit:barcode-scanning:17.3.0")
+    // 生成配对码二维码
+    implementation("com.google.zxing:core:3.5.3")
 
     // 同步层：HTTP 客户端 + Ed25519（BouncyCastle lightweight API）
     implementation("com.squareup.okhttp3:okhttp:4.12.0")

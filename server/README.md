@@ -12,7 +12,7 @@ vkey 的零知识同步服务端：只保存 verifier、设备公钥与**条目�
 ```
 server/
 ├── cmd/
-│   ├── vkeyd/          # 服务端 CLI（init / serve / policy set）
+│   ├── vkeyd/          # 服务端 CLI（init / serve / policy set / purge）
 │   └── genvectors/     # 重新生成 shared/vectors/*.json
 ├── internal/
 │   ├── api/            # 路由、鉴权中间件、handlers、页面、限流
@@ -40,6 +40,12 @@ go run ./cmd/vkeyd serve --db ../.tmp/scratch/vkey.db --listen 127.0.0.1:3150 \
 
 # 改策略
 go run ./cmd/vkeyd policy set --db ../.tmp/scratch/vkey.db --require-master-pw=true
+
+# 查看将被物理删除的墓碑（默认即 dry-run，不写库）
+go run ./cmd/vkeyd purge --db ../.tmp/scratch/vkey.db
+
+# 真正执行物理删除（仅控制台/运维手动）
+go run ./cmd/vkeyd purge --db ../.tmp/scratch/vkey.db --yes
 ```
 
 `init` 的行为：
@@ -189,6 +195,30 @@ vkeyd 只监听 `127.0.0.1:3150`，TLS 由 nginx 终止（实测 nginx/1.18.0）
   `/dl/*` 只做白名单静态分发（白名单来自产物目录的 `SHA256SUMS`）。
 - 速率限制为进程内固定窗口（60 次/分钟/IP，作用于 `auth/token` 与 `pair/claim`），
   重启清零；多实例部署需上移到 nginx。
+
+## 数据删除策略
+
+- **客户端删除 = 逻辑删除（墓碑）**：客户端删除条目时只是写入
+  `deleted_at != 0` 的新版本，服务端**永不**因客户端请求物理删除行。
+  墓碑是同步协议的一部分（其它设备靠它得知删除），`GET /items` 会照常下发。
+- **物理删除只有一条通道**：`vkeyd purge --db <path> --yes`
+  —— 在服务器控制台由运维手动执行。**没有、也不会提供任何 HTTP 删除接口**
+  （例如 `DELETE /api/v1/items` 之类一律不实现）。
+- 命令行为：
+
+  ```bash
+  vkeyd purge --db <path>            # 默认 = dry-run：列出墓碑并给总数，不写库
+  vkeyd purge --db <path> --dry-run  # 同上（显式写法）
+  vkeyd purge --db <path> --yes      # 真正删除：单事务，完成后打印删除条数
+  ```
+
+  - 只影响 `items` 表中 `deleted_at IS NOT NULL AND deleted_at != 0` 的行；
+    无墓碑时打印「没有已逻辑删除的条目」并以 0 退出。
+  - `--dry-run` 与 `--yes` 同时给出时以 `--dry-run` 为准（更安全），并在 stderr 提示。
+  - 防御断言：删除在单事务内执行，只有「实际影响行数 == 事务内统计的墓碑数」
+    且「删除前后非墓碑行数完全一致」才提交，否则回滚并报错退出。
+- **范围**：本策略只覆盖 `items`。`item_conflicts` / `pairs` / `audit`
+  等表的清理不在本次范围内（需要时另行设计，且同样只走控制台）。
 
 ## M1 已知边界
 

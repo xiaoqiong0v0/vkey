@@ -95,7 +95,6 @@ object SyncManager {
                 username = username,
                 seed = Crypto.b64urlEncode(seed),
                 token = response.token,
-                seq = 0L,
             ),
             masterKeyBase32 = Crypto.base32Encode(masterKey),
         )
@@ -146,7 +145,6 @@ object SyncManager {
                 username = username,
                 seed = Crypto.b64urlEncode(seed),
                 token = claim.token,
-                seq = 0L,
             ),
             masterKeyBase32 = Crypto.base32Encode(masterKey),
         )
@@ -243,7 +241,7 @@ object SyncManager {
     private val CODE_ID_PATTERN = Regex("^[A-Za-z0-9._-]{1,64}$")
 
     /** 用已存设备材料构造带签名能力的客户端。 */
-    private fun authorizedApi(config: DeviceConfig): VkeyApi {
+    internal fun authorizedApi(config: DeviceConfig): VkeyApi {
         val api = VkeyApi(config.server_url)
         api.token = config.token
         api.deviceSeed = decodeSeed(config.seed)

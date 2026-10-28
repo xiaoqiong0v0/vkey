@@ -5,6 +5,7 @@
 //	vkeyd init   --db <path> [--username default] [--master-key <base32>]
 //	vkeyd serve  --db <path> --listen :8080 [--domain <域名>] [--artifacts-dir <dir>] [--set-require-master-pw=true|false]
 //	vkeyd policy set --db <path> --require-master-pw=<bool>
+//	vkeyd purge  --db <path> [--dry-run] [--yes]
 package main
 
 import (
@@ -25,6 +26,9 @@ import (
 	"xiaoqiong0v0.cn/vkey/server/internal/store"
 	"xiaoqiong0v0.cn/vkey/server/internal/version"
 )
+
+// msgNoTombstone 是无待删条目时的统一提示。
+const msgNoTombstone = "没有已逻辑删除的条目"
 
 // main 是进程入口；失败时打印到 stderr 并以非 0 退出。
 func main() {
@@ -47,6 +51,8 @@ func run(args []string) error {
 		return runServe(args[1:])
 	case "policy":
 		return runPolicy(args[1:])
+	case "purge":
+		return runPurge(args[1:])
 	case "help", "-h", "--help":
 		usage(os.Stdout)
 		return nil
@@ -248,6 +254,89 @@ func setPolicy(ctx context.Context, st *store.Store, require bool) error {
 	return nil
 }
 
+// runPurge 处理 `purge` 子命令：物理删除已逻辑删除的墓碑条目。
+//
+// 只允许在控制台/运维手动执行，不提供任何 HTTP 接口。
+// 默认（不带 --yes）为 dry-run，只打印候选条目而不写库。
+func runPurge(args []string) error {
+	fs := flag.NewFlagSet("purge", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	dbPath := fs.String("db", "", "sqlite 数据库路径（必填）")
+	dryRun := fs.Bool("dry-run", false, "只列出待物理删除的墓碑，不写库（默认行为）")
+	yes := fs.Bool("yes", false, "真正执行物理删除")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *dbPath == "" {
+		return errors.New("purge: 缺少 --db")
+	}
+	doDelete, note := resolvePurgeMode(*dryRun, *yes)
+	if note != "" {
+		fmt.Fprintf(os.Stderr, "vkeyd: %s\n", note)
+	}
+
+	st, err := store.Open(*dbPath)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = st.Close() }()
+
+	ctx := context.Background()
+	if !doDelete {
+		return purgeDryRun(ctx, st)
+	}
+	n, err := st.Purge(ctx)
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		fmt.Printf("%s\n", msgNoTombstone)
+		return nil
+	}
+	fmt.Printf("已物理删除 %d 条墓碑\n", n)
+	return nil
+}
+
+// purgeDryRun 打印将被物理删除的墓碑清单，不写库。
+func purgeDryRun(ctx context.Context, st *store.Store) error {
+	targets, err := st.PurgePending(ctx)
+	if err != nil {
+		return err
+	}
+	if len(targets) == 0 {
+		fmt.Printf("%s\n", msgNoTombstone)
+		return nil
+	}
+	fmt.Printf("dry-run：以下 %d 条墓碑将被物理删除（未写库）\n", len(targets))
+	for _, t := range targets {
+		fmt.Printf("  id=%s kind=%s rp_id=%s deleted_at=%d version=%d\n",
+			shortID(t.ID), t.Kind, t.RPID, t.DeletedAt, t.Version)
+	}
+	fmt.Printf("合计：%d 条（加 --yes 执行删除）\n", len(targets))
+	return nil
+}
+
+// resolvePurgeMode 决定 purge 的执行模式。
+//
+// 参数：dryRun / yes 为命令行开关。
+// 返回：doDelete 表示是否真正删除；note 为需要提示给用户的说明（无提示时为空）。
+// 两个开关同时给出时以 --dry-run 为准（更安全）。
+func resolvePurgeMode(dryRun, yes bool) (doDelete bool, note string) {
+	if dryRun && yes {
+		return false, "--dry-run 与 --yes 同时给出，以 --dry-run 为准（未写库）"
+	}
+	return yes, ""
+}
+
+// shortID 返回用于展示的 id 前缀。
+func shortID(id string) string {
+	const n = 8
+	if len(id) <= n {
+		return id
+	}
+	return id[:n] + "…"
+}
+
 // usage 打印命令帮助。
 func usage(w *os.File) {
 	fmt.Fprint(w, `vkeyd — vkey 零知识同步服务端
@@ -256,11 +345,13 @@ func usage(w *os.File) {
   vkeyd init   --db <path> [--username default] [--master-key <base32>]
   vkeyd serve  --db <path> --listen :8080 [--domain <域名>] [--artifacts-dir <dir>] [--set-require-master-pw=true|false]
   vkeyd policy set --db <path> --require-master-pw=<bool>
+  vkeyd purge  --db <path> [--dry-run] [--yes]
 
 说明：
   init   建库并创建账号，stdout 只打印一次 master_key（base32 无填充）
   serve  启动 HTTP 服务；TLS 由 nginx 终止
   policy 修改服务端策略（是否强制主密码）
+  purge  物理删除已逻辑删除的条目（墓碑）；默认 dry-run，仅控制台执行，无 HTTP 接口
 
 退出码：0 成功；非 0 失败（错误信息输出到 stderr）。
 `)

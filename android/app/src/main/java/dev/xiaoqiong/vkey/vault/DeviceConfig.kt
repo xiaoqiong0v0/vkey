@@ -15,7 +15,9 @@ import kotlinx.serialization.Serializable
  * @property username 账号名原文（verifier 的 HKDF info）
  * @property seed Ed25519 私钥种子（base64url 32B）
  * @property token 设备 token（base64url 32B）
- * @property seq 本地同步游标（M3.2 后半的条目同步使用）
+ *
+ * 同步游标不在这里：它描述的是「库」的进度而非设备身份，故上移到
+ * [VaultData.seq]（旧 vault 里残留的 `device.seq` 在读取时被忽略）。
  */
 @Serializable
 data class DeviceConfig(
@@ -25,5 +27,4 @@ data class DeviceConfig(
     val username: String,
     val seed: String,
     val token: String,
-    val seq: Long = 0L,
 )

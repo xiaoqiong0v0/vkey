@@ -22,6 +22,8 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -37,6 +39,8 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -47,6 +51,7 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -59,18 +64,38 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.xiaoqiong.vkey.sync.ItemJson
+import dev.xiaoqiong.vkey.sync.ItemsSync
 import dev.xiaoqiong.vkey.sync.Links
+import dev.xiaoqiong.vkey.sync.SyncStats
 import dev.xiaoqiong.vkey.totp.Totp
 import dev.xiaoqiong.vkey.ui.clearClipboard
 import dev.xiaoqiong.vkey.ui.copyToClipboard
+import dev.xiaoqiong.vkey.ui.describeFailure
+import dev.xiaoqiong.vkey.ui.formatSyncTime
 import dev.xiaoqiong.vkey.vault.Base32
 import dev.xiaoqiong.vkey.vault.DeviceConfig
 import dev.xiaoqiong.vkey.vault.TotpItem
 import dev.xiaoqiong.vkey.vault.VaultData
 import dev.xiaoqiong.vkey.vault.VaultStore
+import dev.xiaoqiong.vkey.vault.WebAuthnItem
+import dev.xiaoqiong.vkey.vault.withLegacyWebAuthnMigrated
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.UUID
+
+/** 列表页的页签索引：2FA / 密钥（与 HorizontalPager 的页序一致）。 */
+private const val PAGE_2FA = 0
+private const val PAGE_WEBAUTHN = 1
+private const val PAGE_COUNT = 2
+
+/** 密钥凭据创建时间的展示格式。 */
+private const val CREATED_AT_PATTERN = "yyyy-MM-dd HH:mm"
 
 /** 应用入口：持有库状态与「自动锁定」逻辑，UI 全部在 Compose 里。 */
 class MainActivity : androidx.fragment.app.FragmentActivity() {
@@ -102,7 +127,11 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
 
         store = VaultStore(filesDir)
         settings = dev.xiaoqiong.vkey.vault.AppSettings(this)
-        vault.value = store.read()
+        val loaded = store.read()
+        // 旧版本把 webauthn 误并入 items：升级后一次性迁移到「密钥」列表并落盘
+        val migrated = loaded?.withLegacyWebAuthnMigrated()
+        if (migrated != null && migrated != loaded) store.write(migrated)
+        vault.value = migrated
         locked.value = vault.value != null
         handleDeepLink(intent)
 
@@ -382,12 +411,75 @@ private fun VaultScreen(
     var showAdd by remember { mutableStateOf(false) }
     var showScan by remember { mutableStateOf(false) }
     var fabExpanded by remember { mutableStateOf(false) }
-    var showSettings by remember { mutableStateOf(false) }
     var showSync by remember { mutableStateOf(false) }
+    // 待确认的删除 / 吊销目标：null = 没有弹窗（所有删除都必须二次确认）
+    var pendingDelete by remember { mutableStateOf<TotpItem?>(null) }
+    var pendingRevoke by remember { mutableStateOf<WebAuthnItem?>(null) }
+    // 2FA / 密钥两个页签，支持左右滑动；页签与滑动双向同步
+    val pagerState = rememberPagerState(pageCount = { PAGE_COUNT })
     // 深链带来的配对码：先固定下来再清除 pending，避免 SyncScreen 首帧读到 null
     var syncPrefill by remember { mutableStateOf("") }
+    // 主页：连按两次返回才退出（第一次给出提示）
+    val activity = LocalContext.current as? android.app.Activity
+    var lastBackAt by remember { mutableLongStateOf(0L) }
+    androidx.activity.compose.BackHandler {
+        val now = System.currentTimeMillis()
+        if (now - lastBackAt < 2000L) {
+            activity?.finish()
+        } else {
+            lastBackAt = now
+            android.widget.Toast
+                .makeText(context, "再按一次返回退出", android.widget.Toast.LENGTH_SHORT)
+                .show()
+        }
+    }
+
     // 逐帧时间源：进度条按真实时间连续推进（不再 500ms 一跳）
     var nowMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    // 同步串行化：自动同步与「立即同步」可能同时发生，避免两次合并互相覆盖
+    val syncMutex = remember { Mutex() }
+    // 最近一次自动/手动同步的失败原因（不打扰用户，只在设置页状态里展示）
+    var lastSyncError by remember { mutableStateOf<String?>(null) }
+    // 同步回调里要用最新的库内容，避免闭包捕获旧快照
+    val latestVault by rememberUpdatedState(vault)
+
+    /**
+     * 执行一次条目同步：IO 上跑 [ItemsSync.sync]，把结果合并回最新库并落盘。
+     *
+     * 合并策略：以同步结果为准，但保留同步期间新增（结果里不存在）的本地条目。
+     *
+     * @return 本次同步统计
+     */
+    val doSync: suspend () -> SyncStats = {
+        syncMutex.withLock {
+            val before = latestVault
+            try {
+                val outcome = ItemsSync.sync(before)
+                val synced = outcome.vault
+                val syncedIds = synced.items.mapTo(HashSet()) { it.id }
+                val syncedWebAuthnIds = synced.webAuthn.mapTo(HashSet()) { it.id }
+                val merged = synced.copy(
+                    items = synced.items + before.items.filterNot { it.id in syncedIds },
+                    // 拉取期间本地新增的密钥条目（理论上没有，防御性保留）同样不能丢
+                    webAuthn = synced.webAuthn +
+                        before.webAuthn.filterNot { it.id in syncedWebAuthnIds },
+                )
+                onPersist(merged)
+                lastSyncError = null
+                outcome.stats
+            } catch (t: Throwable) {
+                lastSyncError = describeFailure(t)
+                throw t
+            }
+        }
+    }
+
+    // 进入列表页且已配置时自动同步一次：失败不打扰用户，只记录状态
+    LaunchedEffect(Unit) {
+        if (latestVault.device != null) {
+            runCatching { doSync() }
+        }
+    }
 
     LaunchedEffect(pendingSyncServer, pendingPairCode) {
         if (pendingSyncServer != null || pendingPairCode != null) {
@@ -410,41 +502,48 @@ private fun VaultScreen(
         }
     }
 
+    // 切到「密钥」页时收起「+」菜单（FAB 只在 2FA 页出现）
+    LaunchedEffect(pagerState.currentPage) {
+        if (pagerState.currentPage != PAGE_2FA) fabExpanded = false
+    }
+
     Box(Modifier.fillMaxSize()) {
+        // 墓碑条目仍在库里（等下次同步推送），但 UI 不显示；非 totp 条目不属于 2FA 页
+        val visibleTotp = vault.items.filter { it.kind == ItemJson.KIND_TOTP && !it.deleted }
+        val visibleWebAuthn = vault.webAuthn.filterNot { it.deleted }
         Scaffold(
             topBar = {
                 TopAppBar(
-                    title = { Text("vkey · ${vault.items.size} 条") },
+                    title = {
+                        Text(
+                            "vkey · 2FA ${visibleTotp.size} · 密钥 ${visibleWebAuthn.size}",
+                            style = MaterialTheme.typography.titleMedium,
+                        )
+                    },
                     actions = {
-                        TextButton(onClick = { showSettings = true }) { Text("设置") }
+                        TextButton(onClick = { syncPrefill = ""; showSync = true }) { Text("设置") }
                         TextButton(onClick = onLock) { Text("锁定") }
                     },
                 )
             },
         ) { padding ->
-            if (vault.items.isEmpty()) {
-                Column(
-                    modifier = Modifier.fillMaxSize().padding(padding).padding(24.dp),
-                    verticalArrangement = Arrangement.Center,
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    Text("还没有条目", style = MaterialTheme.typography.titleMedium)
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        "点右下角「+」，可扫描二维码或手动输入 Base32 密钥",
-                        style = MaterialTheme.typography.bodyMedium,
-                        textAlign = TextAlign.Center,
+            Column(Modifier.fillMaxSize().padding(padding)) {
+                TabRow(selectedTabIndex = pagerState.currentPage) {
+                    Tab(
+                        selected = pagerState.currentPage == PAGE_2FA,
+                        onClick = { scope.launch { pagerState.animateScrollToPage(PAGE_2FA) } },
+                        text = { Text("2FA") },
+                    )
+                    Tab(
+                        selected = pagerState.currentPage == PAGE_WEBAUTHN,
+                        onClick = { scope.launch { pagerState.animateScrollToPage(PAGE_WEBAUTHN) } },
+                        text = { Text("密钥") },
                     )
                 }
-            } else {
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize().padding(padding),
-                    contentPadding = PaddingValues(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    items(vault.items, key = { it.id }) { item ->
-                        TotpCard(
-                            item = item,
+                HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { page ->
+                    when (page) {
+                        PAGE_2FA -> TotpList(
+                            entries = visibleTotp,
                             nowMillis = nowMillis,
                             onCopy = { code ->
                                 copyToClipboard(context, code, sensitive = true)
@@ -453,9 +552,11 @@ private fun VaultScreen(
                                     clearClipboard(context)
                                 }
                             },
-                            onDelete = {
-                                onPersist(vault.copy(items = vault.items.filterNot { it.id == item.id }))
-                            },
+                            onDelete = { pendingDelete = it },
+                        )
+                        else -> WebAuthnList(
+                            entries = visibleWebAuthn,
+                            onRevoke = { pendingRevoke = it },
                         )
                     }
                 }
@@ -463,7 +564,7 @@ private fun VaultScreen(
         }
 
         // 遮罩：展开时铺满全屏接管点击，点空白处收起；画在内容之上、按钮之下
-        if (fabExpanded) {
+        if (fabExpanded && pagerState.currentPage == PAGE_2FA) {
             Box(
                 Modifier
                     .fillMaxSize()
@@ -474,75 +575,65 @@ private fun VaultScreen(
             )
         }
 
-        // 悬浮按钮组：绝对定位在右下角，动作按钮向上展开（不参与布局，故不会被裁剪）
-        Column(
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(end = 16.dp, bottom = 24.dp),
-            horizontalAlignment = Alignment.End,
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            if (expandProgress > 0.01f) {
-                Column(
-                    horizontalAlignment = Alignment.End,
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                    // 先叠在 FAB 上方再向上分开：只做位移（0 → 12dp），不做透明度/尺寸动画
-                    modifier = Modifier
-                        .offset(y = ((1f - expandProgress) * 12).dp),
-                ) {
-                    ActionButton(
-                        label = "扫描二维码",
-                        onClick = {
-                            fabExpanded = false
-                            showScan = true
-                        },
-                    )
-                    ActionButton(
-                        label = "手动输入",
-                        onClick = {
-                            fabExpanded = false
-                            showAdd = true
-                        },
+        // 悬浮按钮组：只在 2FA 页出现（密钥页只读/可吊销，不提供新增）
+        if (pagerState.currentPage == PAGE_2FA) {
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 16.dp, bottom = 24.dp),
+                horizontalAlignment = Alignment.End,
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                if (expandProgress > 0.01f) {
+                    Column(
+                        horizontalAlignment = Alignment.End,
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                        // 先叠在 FAB 上方再向上分开：只做位移（0 → 12dp），不做透明度/尺寸动画
+                        modifier = Modifier
+                            .offset(y = ((1f - expandProgress) * 12).dp),
+                    ) {
+                        ActionButton(
+                            label = "扫描二维码",
+                            onClick = {
+                                fabExpanded = false
+                                showScan = true
+                            },
+                        )
+                        ActionButton(
+                            label = "手动输入",
+                            onClick = {
+                                fabExpanded = false
+                                showAdd = true
+                            },
+                        )
+                    }
+                    Spacer(Modifier.height(4.dp))
+                }
+
+                val plusRotation by animateFloatAsState(
+                    targetValue = if (fabExpanded) 45f else 0f,
+                    animationSpec = tween(durationMillis = 180),
+                    label = "fab-plus-rotation",
+                )
+                FloatingActionButton(onClick = { fabExpanded = !fabExpanded }) {
+                    Text(
+                        text = "+",
+                        fontSize = 28.sp,
+                        modifier = Modifier.rotate(plusRotation),
                     )
                 }
-                Spacer(Modifier.height(4.dp))
-            }
-
-            val plusRotation by animateFloatAsState(
-                targetValue = if (fabExpanded) 45f else 0f,
-                animationSpec = tween(durationMillis = 180),
-                label = "fab-plus-rotation",
-            )
-            FloatingActionButton(onClick = { fabExpanded = !fabExpanded }) {
-                Text(
-                    text = "+",
-                    fontSize = 28.sp,
-                    modifier = Modifier.rotate(plusRotation),
-                )
             }
         }
     }
 
-    if (showSettings) {
-        SettingsDialog(
-            autoLockOnResume = autoLockOnResume,
-            onAutoLockChange = onAutoLockChange,
-            serverUrl = serverUrl,
-            device = vault.device,
-            onOpenSync = {
-                showSettings = false
-                syncPrefill = ""
-                showSync = true
-            },
-            onDismiss = { showSettings = false },
-        )
-    }
 
     if (showSync) {
         dev.xiaoqiong.vkey.ui.SyncScreen(
             masterKey = vault.master_key,
             device = vault.device,
             serverUrl = serverUrl,
+            lastSyncAt = vault.lastSyncAt,
+            onSyncNow = doSync,
             initialPairCode = syncPrefill.takeIf { it.isNotBlank() },
             onSaved = { config, newMasterKey ->
                 // 配对拿到的 master_key 才是账号密钥：以它为准（本地条目保留）
@@ -554,6 +645,8 @@ private fun VaultScreen(
                 )
             },
             onServerUrlChange = onServerUrlChange,
+            autoLockOnResume = autoLockOnResume,
+            onAutoLockChange = onAutoLockChange,
             onClearDevice = { onPersist(vault.copy(device = null)) },
             onClose = { showSync = false },
         )
@@ -585,72 +678,54 @@ private fun VaultScreen(
             },
         )
     }
-}
 
-/** 设置：回前台是否重新解锁、同步配置入口（含当前配对状态）。 */
-@Composable
-private fun SettingsDialog(
-    autoLockOnResume: Boolean,
-    onAutoLockChange: (Boolean) -> Unit,
-    serverUrl: String,
-    device: DeviceConfig?,
-    onOpenSync: () -> Unit,
-    onDismiss: () -> Unit,
-) {
-    var autoLock by remember { mutableStateOf(autoLockOnResume) }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("设置") },
-        text = {
-            Column {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Checkbox(checked = autoLock, onCheckedChange = { autoLock = it })
-                    Text("回到前台时重新解锁")
-                }
-                Spacer(Modifier.height(12.dp))
-                Text("同步", style = MaterialTheme.typography.titleSmall)
-                Text(
-                    "服务器：${device?.server_url ?: serverUrl.ifBlank { "（未设置）" }}",
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.padding(top = 4.dp),
-                )
-                Text(
-                    "状态：" + if (device == null) {
-                        "未配置"
-                    } else {
-                        "已登录（${device.device_name}）"
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                )
+    // 删除 2FA 条目：二次确认后才打墓碑（下次同步把删除推到服务端）
+    pendingDelete?.let { item ->
+        AlertDialog(
+            onDismissRequest = { pendingDelete = null },
+            title = { Text("删除 2FA 条目") },
+            text = { Text("删除后无法恢复（服务端也会删除）。") },
+            confirmButton = {
                 TextButton(onClick = {
-                    onAutoLockChange(autoLock)
-                    onOpenSync()
-                }) { Text("同步配置 / 配对") }
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = {
-                onAutoLockChange(autoLock)
-                onDismiss()
-            }) { Text("保存") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
-    )
+                    val now = System.currentTimeMillis() / 1000
+                    onPersist(
+                        vault.copy(
+                            items = vault.items.map { old ->
+                                if (old.id == item.id) old.copy(deleted = true, updatedAt = now) else old
+                            },
+                        ),
+                    )
+                    pendingDelete = null
+                }) { Text("删除") }
+            },
+            dismissButton = { TextButton(onClick = { pendingDelete = null }) { Text("取消") } },
+        )
+    }
+
+    // 吊销 WebAuthn 凭据：二次确认后才打墓碑（唯一会推送的密钥操作）
+    pendingRevoke?.let { item ->
+        AlertDialog(
+            onDismissRequest = { pendingRevoke = null },
+            title = { Text("吊销密钥凭据") },
+            text = { Text("吊销后所有设备（含电脑）将无法再用该站点凭据。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    val now = System.currentTimeMillis() / 1000
+                    onPersist(
+                        vault.copy(
+                            webAuthn = vault.webAuthn.map { old ->
+                                if (old.id == item.id) old.copy(deleted = true, updatedAt = now) else old
+                            },
+                        ),
+                    )
+                    pendingRevoke = null
+                }) { Text("吊销") }
+            },
+            dismissButton = { TextButton(onClick = { pendingRevoke = null }) { Text("取消") } },
+        )
+    }
 }
 
-/**
- * 展开出来的动作按钮。
- *
- * 刻意不做透明度 / 尺寸 / 颜色动画：
- * - `graphicsLayer { alpha }` 会生成离屏图层，按按钮矩形裁掉外扩阴影；
- * - 容器色 alpha 会与背景混合导致动画过程中偏色；
- * - 尺寸动画会被布局边界裁剪。
- * 因此展开动画只由父级 `offset` 位移承担，按钮自身始终是「不透明、原色、固定尺寸」。
- */
 @Composable
 private fun ActionButton(label: String, onClick: () -> Unit) {
     ExtendedFloatingActionButton(
@@ -658,6 +733,127 @@ private fun ActionButton(label: String, onClick: () -> Unit) {
         icon = {},
         text = { Text(label) },
     )
+}
+
+/**
+ * 2FA 页：TOTP 卡片列表（空态给出添加入口提示）。
+ *
+ * @param entries 可见条目（已过滤墓碑）
+ * @param nowMillis 当前时间，用于推进验证码进度
+ * @param onCopy 复制验证码
+ * @param onDelete 请求删除（需二次确认后才打墓碑）
+ */
+@Composable
+private fun TotpList(
+    entries: List<TotpItem>,
+    nowMillis: Long,
+    onCopy: (String) -> Unit,
+    onDelete: (TotpItem) -> Unit,
+) {
+    if (entries.isEmpty()) {
+        EmptyState("还没有 2FA 条目", "点右下角「+」，可扫描二维码或手动输入 Base32 密钥")
+        return
+    }
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        items(entries, key = { it.id }) { item ->
+            TotpCard(
+                item = item,
+                nowMillis = nowMillis,
+                onCopy = onCopy,
+                onDelete = { onDelete(item) },
+            )
+        }
+    }
+}
+
+/**
+ * 密钥页：WebAuthn 凭据列表（只读 + 吊销；不提供新增）。
+ *
+ * @param entries 可见条目（已过滤墓碑）
+ * @param onRevoke 请求吊销（需二次确认后才打墓碑）
+ */
+@Composable
+private fun WebAuthnList(entries: List<WebAuthnItem>, onRevoke: (WebAuthnItem) -> Unit) {
+    if (entries.isEmpty()) {
+        EmptyState(
+            "没有密钥凭据",
+            "这些是桌面端的虚拟密钥凭据，手机只读/可吊销（不能在这里新增）。",
+        )
+        return
+    }
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        items(entries, key = { it.id }) { item ->
+            WebAuthnCard(item = item, onRevoke = { onRevoke(item) })
+        }
+    }
+}
+
+/** 统一空态：标题 + 说明，居中展示。 */
+@Composable
+private fun EmptyState(title: String, description: String) {
+    Column(
+        modifier = Modifier.fillMaxSize().padding(24.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text(title, style = MaterialTheme.typography.titleMedium)
+        Spacer(Modifier.height(8.dp))
+        Text(
+            description,
+            style = MaterialTheme.typography.bodyMedium,
+            textAlign = TextAlign.Center,
+        )
+    }
+}
+
+/** 单条 WebAuthn 凭据：站点、账号、创建时间 + 「吊销」。 */
+@Composable
+private fun WebAuthnCard(item: WebAuthnItem, onRevoke: () -> Unit) {
+    val createdAt = remember(item.createdAt) { formatCreatedAt(item.createdAt) }
+    Card(Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.Top,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(item.rpId.ifBlank { "(未知站点)" }, style = MaterialTheme.typography.titleMedium)
+                Text(
+                    item.username.ifBlank { item.displayName }.ifBlank { "(未命名账号)" },
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                if (createdAt != null) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "创建于 $createdAt",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            TextButton(onClick = onRevoke) { Text("吊销") }
+        }
+    }
+}
+
+/**
+ * 把 unix 秒格式化为本地时间。
+ *
+ * @param epochSeconds unix 秒
+ * @return 本地 `yyyy-MM-dd HH:mm`；未知（<=0）返回 null
+ */
+private fun formatCreatedAt(epochSeconds: Long): String? {
+    if (epochSeconds <= 0L) return null
+    return SimpleDateFormat(CREATED_AT_PATTERN, Locale.getDefault())
+        .format(Date(epochSeconds * 1000L))
 }
 
 @Composable

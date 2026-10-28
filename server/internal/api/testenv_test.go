@@ -204,6 +204,21 @@ func (e *env) getNoAuth(path string) response {
 	return response{status: resp.StatusCode, body: body}
 }
 
+// getNoRedirect 发送免鉴权 GET 请求且不跟随重定向，返回响应与 Location 头。
+func (e *env) getNoRedirect(path string) (response, string) {
+	e.t.Helper()
+	client := &http.Client{
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	resp, err := client.Get(e.srv.URL + path)
+	if err != nil {
+		e.t.Fatalf("请求 %s 失败: %v", path, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	return response{status: resp.StatusCode, body: body}, resp.Header.Get("Location")
+}
+
 // do 发送请求并读取响应。
 func (e *env) do(req *http.Request) response {
 	e.t.Helper()

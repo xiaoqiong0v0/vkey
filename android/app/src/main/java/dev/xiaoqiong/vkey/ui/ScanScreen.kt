@@ -53,6 +53,8 @@ import com.google.mlkit.vision.barcode.BarcodeScannerOptions
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
+import dev.xiaoqiong.vkey.sync.Links
+import dev.xiaoqiong.vkey.sync.ScanLink
 import dev.xiaoqiong.vkey.vault.Otpauth
 import dev.xiaoqiong.vkey.vault.TotpItem
 import java.util.concurrent.Executors
@@ -63,13 +65,27 @@ private val FRAME_MIN = 200.dp
 private val FRAME_MAX = 320.dp
 
 /**
- * 扫一扫添加：相机铺满全屏，中间镂空取景框，识别 `otpauth://` 后回调。
+ * 扫一扫：相机铺满全屏，中间镂空取景框。
  *
- * @param onResult 解析成功后的条目
+ * 一份扫码 UI 服务两种用途：
+ * - 添加 TOTP：识别 `otpauth://` 后通过 [onResult] 回条目；
+ * - 同步配置：识别 `vkey://config?server=…`（[onConfigLink]）、
+ *   `vkey://pair?code=…` 或裸配对码（[onPairCode]）。
+ *
+ * 三个回调都可为 null；未提供的类型会被判定为「内容不匹配」并给出提示。
+ *
+ * @param onResult 解析出的 TOTP 条目（null 表示本次扫码不是用来加 TOTP）
+ * @param onConfigLink 识别到同步配置深链，参数为服务器地址
+ * @param onPairCode 识别到配对码（深链或裸码），参数为原文
  * @param onCancel 用户取消
  */
 @Composable
-fun ScanScreen(onResult: (TotpItem) -> Unit, onCancel: () -> Unit) {
+fun ScanScreen(
+    onResult: ((TotpItem) -> Unit)? = null,
+    onConfigLink: ((String) -> Unit)? = null,
+    onPairCode: ((String) -> Unit)? = null,
+    onCancel: () -> Unit,
+) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val configuration = LocalConfiguration.current
@@ -108,8 +124,11 @@ fun ScanScreen(onResult: (TotpItem) -> Unit, onCancel: () -> Unit) {
                         .build(),
                 ).process(image).addOnSuccessListener { barcodes ->
                     val raw = barcodes.firstOrNull()?.rawValue
-                    val entry = raw?.let { Otpauth.parse(it) }
-                    if (entry != null) onResult(entry.item) else error = "这张图里没有可用的 otpauth 二维码"
+                    if (raw == null) {
+                        error = "这张图里没有识别到二维码"
+                    } else {
+                        dispatchRaw(raw, onResult, onConfigLink, onPairCode) { error = it }
+                    }
                 }.addOnFailureListener { e ->
                     error = "图片识别失败：${e.message}"
                 }
@@ -187,13 +206,8 @@ fun ScanScreen(onResult: (TotpItem) -> Unit, onCancel: () -> Unit) {
                             processProxy(proxy, scanner) { raw ->
                                 android.util.Log.i("vkey-scan", "barcode raw=${raw.take(32)}")
                                 if (!handled) {
-                                    val entry = Otpauth.parse(raw)
-                                    if (entry != null) {
-                                        handled = true
-                                        onResult(entry.item)
-                                    } else {
-                                        error = "二维码不是有效的 otpauth:// 链接"
-                                    }
+                                    val consumed = dispatchRaw(raw, onResult, onConfigLink, onPairCode) { error = it }
+                                    if (consumed) handled = true
                                 }
                             }
                         } catch (t: Throwable) {
@@ -253,7 +267,7 @@ fun ScanScreen(onResult: (TotpItem) -> Unit, onCancel: () -> Unit) {
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Text(
-                text = "扫描 Authenticator 二维码",
+                text = if (onResult != null) "扫描 Authenticator 二维码" else "扫描同步配置 / 配对二维码",
                 color = Color.White,
                 style = MaterialTheme.typography.titleMedium,
             )
@@ -268,7 +282,11 @@ fun ScanScreen(onResult: (TotpItem) -> Unit, onCancel: () -> Unit) {
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Text(
-                text = error ?: "把二维码放进框内，识别后会自动添加",
+                text = error ?: if (onResult != null) {
+                    "把二维码放进框内，识别后会自动添加"
+                } else {
+                    "把二维码放进框内，识别后自动填入"
+                },
                 color = if (error != null) Color(0xFFFF8A80) else Color.White.copy(alpha = 0.85f),
                 style = MaterialTheme.typography.bodyMedium,
                 textAlign = TextAlign.Center,
@@ -311,10 +329,18 @@ fun ScanScreen(onResult: (TotpItem) -> Unit, onCancel: () -> Unit) {
         var text by remember { mutableStateOf("") }
         androidx.compose.material3.AlertDialog(
             onDismissRequest = { showPaste = false },
-            title = { Text("粘贴 otpauth 链接") },
+            title = { Text(if (onResult != null) "粘贴 otpauth 链接" else "粘贴链接或配对码") },
             text = {
                 androidx.compose.foundation.layout.Column {
-                    Text("形如 otpauth://totp/Issuer:acct?secret=XXXX", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+                    Text(
+                        text = if (onResult != null) {
+                            "形如 otpauth://totp/Issuer:acct?secret=XXXX"
+                        } else {
+                            "形如 vkey://config?server=https://… 或 vkey://pair?code=…，也可直接粘贴 52 位配对码"
+                        },
+                        color = Color.Gray,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
                     androidx.compose.material3.OutlinedTextField(
                         value = text,
                         onValueChange = { text = it },
@@ -325,14 +351,8 @@ fun ScanScreen(onResult: (TotpItem) -> Unit, onCancel: () -> Unit) {
             },
             confirmButton = {
                 androidx.compose.material3.TextButton(onClick = {
-                    val entry = Otpauth.parse(text)
-                    if (entry != null) {
-                        showPaste = false
-                        onResult(entry.item)
-                    } else {
-                        error = "链接不是有效的 otpauth://totp"
-                        showPaste = false
-                    }
+                    showPaste = false
+                    dispatchRaw(text, onResult, onConfigLink, onPairCode) { error = it }
                 }) { Text("识别") }
             },
             dismissButton = {
@@ -340,6 +360,69 @@ fun ScanScreen(onResult: (TotpItem) -> Unit, onCancel: () -> Unit) {
             },
         )
     }
+}
+
+/**
+ * 把一段扫码/粘贴文本分发给对应流程。
+ *
+ * 顺序：同步配置深链 → 配对码（深链或裸码） → `otpauth://`。
+ * 未提供对应回调时给出明确提示，而不是静默失败。
+ *
+ * @param raw 扫码或粘贴的原文
+ * @param onResult TOTP 回调（可为 null）
+ * @param onConfigLink 同步配置回调（可为 null）
+ * @param onPairCode 配对码回调（可为 null）
+ * @param onError 无法消费时的提示
+ * @return true 表示已被某个流程消费
+ */
+private fun dispatchRaw(
+    raw: String,
+    onResult: ((TotpItem) -> Unit)?,
+    onConfigLink: ((String) -> Unit)?,
+    onPairCode: ((String) -> Unit)?,
+    onError: (String) -> Unit,
+): Boolean {
+    val text = raw.trim()
+    if (text.isEmpty()) {
+        onError("内容为空")
+        return false
+    }
+    // 裸配对码只在「同步配置」场景启用，避免把 52 位 TOTP 密钥误判成配对码
+    val link = if (onResult != null) {
+        Links.parseServerConfig(text)?.let { ScanLink.ServerConfig(it) }
+            ?: Links.parsePairCodeLink(text)?.let { ScanLink.PairCode(it) }
+    } else {
+        Links.classify(text)
+    }
+    when (link) {
+        is ScanLink.ServerConfig -> {
+            val callback = onConfigLink
+            if (callback == null) {
+                onError("这是同步配置二维码，请在「设置 → 同步配置」里扫描")
+                return false
+            }
+            callback(link.serverUrl)
+            return true
+        }
+        is ScanLink.PairCode -> {
+            val callback = onPairCode
+            if (callback == null) {
+                onError("这是设备配对码，请在「设置 → 同步配置」里使用")
+                return false
+            }
+            callback(link.code)
+            return true
+        }
+        null -> Unit
+    }
+    val entry = Otpauth.parse(text)
+    val callback = onResult
+    if (entry != null && callback != null) {
+        callback(entry.item)
+        return true
+    }
+    onError(if (callback != null) "二维码不是有效的 otpauth:// 链接" else "不是同步配置 / 配对二维码")
+    return false
 }
 
 /** 把一帧交给 ML Kit 识别，识别结束务必 close，否则分析器会被卡住。 */

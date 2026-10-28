@@ -16,6 +16,8 @@ type pageData struct {
 	RequireMasterPW bool
 	ServerURL       string
 	Domain          string
+	// DeepLink 是 App 同步配置深链（vkey://config?server=…），仅含服务器地址。
+	DeepLink string
 }
 
 // indexTemplate 是自检页（纯展示，无任何解密逻辑）。
@@ -35,7 +37,14 @@ dt{color:#9aa0a6}
 dd{margin:0;font-variant-numeric:tabular-nums}
 .ok{color:#6ee7a8}
 .muted{color:#9aa0a6;font-size:.9rem;margin-top:2rem}
+.hint{color:#9aa0a6;font-size:.88rem}
+.box{border:1px solid #262b34;border-radius:.75rem;padding:1rem 1.1rem;margin:1.75rem 0 0}
+img.qr{display:block;width:200px;height:200px;margin:.9rem auto;padding:.5rem;border-radius:.5rem;background:#fff}
+input.link{width:100%;box-sizing:border-box;margin:.4rem 0 0;padding:.55rem .7rem;border-radius:.5rem;border:1px solid #333a45;background:#171b22;color:inherit;font:inherit;font-size:.88rem}
+pre.code{margin:.6rem 0 0;padding:.65rem .8rem;border-radius:.5rem;background:#1b1f27;overflow-x:auto}
+pre.code code{background:none;padding:0;word-break:break-all}
 code{background:#1b1f27;padding:.1rem .35rem;border-radius:.25rem;word-break:break-all}
+a{color:#8ab4f8}
 </style>
 </head>
 <body>
@@ -49,48 +58,28 @@ code{background:#1b1f27;padding:.1rem .35rem;border-radius:.25rem;word-break:bre
 <dt>强制主密码</dt><dd>{{if .RequireMasterPW}}是{{else}}否{{end}}</dd>
 <dt>服务器地址</dt><dd><code>{{.ServerURL}}</code></dd>
 </dl>
-<p class="muted">本页面仅展示服务端状态，不做任何解密、不保存主密码、不生成验证码。<br>
-Linux 安装：<code>bash -c "$(curl -fsSL {{.ServerURL}}/install.sh)"</code></p>
-</main>
-</body>
-</html>
-`))
-
-// pairPageTemplate 是配对页（只提供提示与 APK 下载占位，不接触密文）。
-var pairPageTemplate = htmltemplate.Must(htmltemplate.New("pair").Parse(`<!doctype html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>vkey 设备配对</title>
-<style>
-:root{color-scheme:light dark}
-body{font:16px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif;margin:0;padding:2.5rem 1.25rem;background:#0f1115;color:#e8eaed}
-main{max-width:34rem;margin:0 auto}
-h1{font-size:1.4rem;margin:0 0 1rem}
-p{color:#c3c7cc}
-input{width:100%;box-sizing:border-box;margin:.75rem 0;padding:.7rem .8rem;border-radius:.5rem;border:1px solid #333a45;background:#171b22;color:inherit;font:inherit;letter-spacing:.12em;text-transform:uppercase}
-.hint{color:#9aa0a6;font-size:.88rem}
-a{color:#8ab4f8}
-.box{border:1px solid #262b34;border-radius:.75rem;padding:1rem 1.1rem;margin:1.5rem 0}
-code{background:#1b1f27;padding:.1rem .35rem;border-radius:.25rem;word-break:break-all}
-</style>
-</head>
-<body>
-<main>
-<h1>vkey 设备配对</h1>
-<p>在已登录的设备上生成配对码（有效期 10 分钟、仅可使用一次），然后在 vkey 客户端里输入完成绑定。</p>
-<input type="text" inputmode="text" autocomplete="one-time-code" placeholder="XXXX-XXXX-XXXX-…" aria-label="配对码" readonly>
-<p class="hint">出于安全考虑，配对只能在已安装的客户端内完成；本页面不接收、不转发配对码。</p>
+<div class="box">
+<strong>手机配置</strong>
+<p class="hint">扫码后 App 会自动填好地址，再输入配对码或主密钥即可完成同步配置。</p>
+<img src="/pair/qr.png" width="200" height="200" alt="同步配置二维码" class="qr">
+<label class="hint" for="deeplink">链接（可复制手动输入）：</label>
+<input class="link" id="deeplink" type="text" readonly value="{{.DeepLink}}" aria-label="同步配置链接">
+<p class="hint">二维码与链接里只有服务器地址，不含配对码、主密钥或任何凭据。</p>
+</div>
 <div class="box">
 <strong>Android</strong>
-<p class="hint">APK 下载占位：<a href="{{.ServerURL}}/dl/vkey-android.apk">vkey-android.apk</a>（M1 尚未发布产物）</p>
+<p class="hint">下载 APK：<a href="/dl/vkey-android.apk">下载 APK</a>（debug 签名，仅用于内测安装）</p>
 </div>
 <div class="box">
 <strong>Linux</strong>
-<p class="hint"><code>bash -c "$(curl -fsSL {{.ServerURL}}/install.sh)"</code></p>
+<p class="hint">一条命令安装（下载并校验二进制、配置 udev/tmpfiles 与 systemd user service）：</p>
+<pre class="code"><code>bash -c "$(curl -fsSL {{.ServerURL}}/install.sh)"</code></pre>
 </div>
-<p class="hint">服务器：<code>{{.ServerURL}}</code></p>
+<div class="box">
+<strong>Windows</strong>
+<p class="hint">暂未提供（后续版本发布 MSI 安装包）。</p>
+</div>
+<p class="muted">本页面仅展示服务端状态，不做任何解密、不保存主密码、不生成验证码。</p>
 </main>
 </body>
 </html>
@@ -684,13 +673,15 @@ token = ""
 Write-Host "vkey: 安装完成。请在客户端中完成设备配对（$ServerUrl/pair）。"
 `))
 
-// handleIndex 渲染自检页。
+// handleIndex 渲染自检页（含同步配置二维码与可复制深链）。
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
+	serverURL := s.serverURL(r)
 	data := pageData{
 		Status:    "ok",
 		Version:   s.opts.Version,
-		ServerURL: s.serverURL(r),
+		ServerURL: serverURL,
 		Domain:    s.displayDomain(r),
+		DeepLink:  pairDeepLink(serverURL),
 	}
 	items, devices, err := s.store.Counts(r.Context())
 	if err != nil {
@@ -704,12 +695,9 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	writeHTML(w, indexTemplate, data)
 }
 
-// handlePairPage 渲染配对页。
-func (s *Server) handlePairPage(w http.ResponseWriter, r *http.Request) {
-	writeHTML(w, pairPageTemplate, pageData{
-		ServerURL: s.serverURL(r),
-		Domain:    s.displayDomain(r),
-	})
+// handlePairRedirect 把旧配对页 /pair 永久重定向到主页（保留路由，老链接不 404）。
+func (s *Server) handlePairRedirect(w http.ResponseWriter, r *http.Request) {
+	http.Redirect(w, r, "/", http.StatusMovedPermanently)
 }
 
 // handleInstallSH 渲染 Linux 引导脚本。
@@ -735,8 +723,9 @@ func (s *Server) handleInstallPS1(w http.ResponseWriter, r *http.Request) {
 // writeHTML 渲染 HTML 模板并写出。
 func writeHTML(w http.ResponseWriter, t *htmltemplate.Template, data pageData) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	// img-src 'self' 供主页引用同源二维码（/pair/qr.png）；仍禁止外部资源与内联脚本。
 	w.Header().Set("Content-Security-Policy",
-		"default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+		"default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 	w.WriteHeader(http.StatusOK)
 	_ = t.Execute(w, data)
 }

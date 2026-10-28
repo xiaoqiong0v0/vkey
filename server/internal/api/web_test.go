@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"strings"
@@ -45,7 +46,7 @@ func TestPolicy(t *testing.T) {
 	}
 }
 
-// TestWebPages 验证自检页、配对页与引导脚本可访问且注入了 server_url。
+// TestWebPages 验证主页与引导脚本可访问且注入了 server_url。
 func TestWebPages(t *testing.T) {
 	e := newEnv(t)
 	e.enroll("laptop", "linux")
@@ -54,8 +55,11 @@ func TestWebPages(t *testing.T) {
 		path string
 		want []string
 	}{
-		{"/", []string{"vkey 服务端自检", "https://vkey.test", "不生成验证码"}},
-		{"/pair", []string{"vkey 设备配对", "https://vkey.test", "/dl/vkey-android.apk"}},
+		{"/", []string{
+			"vkey 服务端自检", "https://vkey.test", "不生成验证码",
+			// 主页是唯一入口：手机配置 + Android 下载 + Linux 安装三处链接齐备。
+			"手机配置", `src="/pair/qr.png"`, "/dl/vkey-android.apk", "/install.sh",
+		}},
 		{"/install.sh", []string{`SERVER_URL="https://vkey.test"`, "uname -m", "vkey-hid-linux-${ARCH}.tar.gz"}},
 		{"/install.ps1", []string{`$ServerUrl = "https://vkey.test"`, "PROCESSOR_ARCHITECTURE", "/dl/vkey-win-"}},
 	}
@@ -67,6 +71,66 @@ func TestWebPages(t *testing.T) {
 			if !strings.Contains(body, want) {
 				t.Fatalf("%s 缺少内容 %q", c.path, want)
 			}
+		}
+	}
+}
+
+// TestPairRedirectsToIndex 验证旧配对页 /pair 永久重定向到主页。
+func TestPairRedirectsToIndex(t *testing.T) {
+	e := newEnv(t)
+
+	resp, location := e.getNoRedirect("/pair")
+	requireStatus(t, resp, http.StatusMovedPermanently)
+	if location != "/" {
+		t.Fatalf("/pair 应跳转到 /，实际 %q", location)
+	}
+}
+
+// TestPairQRStillServed 验证主页引用的 /pair/qr.png 仍然可用。
+func TestPairQRStillServed(t *testing.T) {
+	e := newEnv(t)
+
+	resp := e.getNoAuth("/pair/qr.png")
+	requireStatus(t, resp, http.StatusOK)
+	if !bytes.HasPrefix(resp.body, pngMagic) {
+		t.Fatal("/pair/qr.png 应返回 PNG")
+	}
+}
+
+// TestIndexPairSection 验证 `/` 页直接展示同步配置二维码与可复制深链，且不含凭据。
+func TestIndexPairSection(t *testing.T) {
+	e := newEnv(t)
+
+	resp := e.getNoAuth("/")
+	requireStatus(t, resp, http.StatusOK)
+	body := string(resp.body)
+
+	deepLink := "vkey://config?server=https://vkey.test"
+	for _, want := range []string{
+		"手机配置",
+		"同步配置二维码",
+		"自动填好地址",
+		`<img src="/pair/qr.png"`,
+		deepLink,
+		"readonly",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("/ 缺少内容 %q", want)
+		}
+	}
+
+	// 深链只带地址：出现且仅出现一次，且不追加任何查询参数。
+	if n := strings.Count(body, "vkey://config"); n != 1 {
+		t.Fatalf("深链应只出现一次，实际 %d 次", n)
+	}
+	if strings.Contains(body, deepLink+"&") {
+		t.Fatal("深链不应附加额外查询参数")
+	}
+
+	// 页面绝不出现服务端不持有的凭据字段名（零知识）。
+	for _, bad := range []string{"master_key", "wrapped_key", "pw_salt", "token"} {
+		if strings.Contains(body, bad) {
+			t.Fatalf("/ 页面不应出现 %q", bad)
 		}
 	}
 }

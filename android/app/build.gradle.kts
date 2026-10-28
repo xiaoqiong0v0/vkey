@@ -44,6 +44,11 @@ android {
     }
 }
 
+// 单元测试直接读取仓库内的协议向量，避免复制副本导致漂移。
+tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
+    systemProperty("vkey.vectorsDir", rootProject.file("../shared/vectors").absolutePath)
+}
+
 dependencies {
     implementation(platform("androidx.compose:compose-bom:2024.10.01"))
     implementation("androidx.compose.material3:material3")
@@ -61,4 +66,12 @@ dependencies {
     implementation("androidx.camera:camera-lifecycle:1.4.0")
     implementation("androidx.camera:camera-view:1.4.0")
     implementation("com.google.mlkit:barcode-scanning:17.3.0")
+
+    // 同步层：HTTP 客户端 + Ed25519（BouncyCastle lightweight API）
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
+
+    // 纯 JVM 单元测试
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
 }

@@ -23,6 +23,8 @@ data class VaultData(
     /** 账号级 32B 主密钥，Base32 无填充（52 字符） */
     val master_key: String,
     val items: List<TotpItem> = emptyList(),
+    /** 同步设备材料；null 表示本机尚未完成同步配置（未登录）。 */
+    val device: DeviceConfig? = null,
 )
 
 /** 磁盘上的密封结构：`nonce` 为 12B IV 的 base64，`ct` 为 AES-256-GCM 密文 base64。 */

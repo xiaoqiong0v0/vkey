@@ -1,11 +1,9 @@
 package dev.xiaoqiong.vkey
 
-import android.content.ClipData
-import android.content.ClipboardManager
-import android.content.Context
-import android.os.Build
+import android.content.Intent
 import android.os.Bundle
 import android.view.WindowManager
+import android.widget.Toast
 import androidx.activity.compose.setContent
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
@@ -61,8 +59,12 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.xiaoqiong.vkey.sync.Links
 import dev.xiaoqiong.vkey.totp.Totp
+import dev.xiaoqiong.vkey.ui.clearClipboard
+import dev.xiaoqiong.vkey.ui.copyToClipboard
 import dev.xiaoqiong.vkey.vault.Base32
+import dev.xiaoqiong.vkey.vault.DeviceConfig
 import dev.xiaoqiong.vkey.vault.TotpItem
 import dev.xiaoqiong.vkey.vault.VaultData
 import dev.xiaoqiong.vkey.vault.VaultStore
@@ -74,9 +76,24 @@ import java.util.UUID
 class MainActivity : androidx.fragment.app.FragmentActivity() {
 
     private lateinit var store: VaultStore
+    private lateinit var settings: dev.xiaoqiong.vkey.vault.AppSettings
 
     private val vault = mutableStateOf<VaultData?>(null)
     private val locked = mutableStateOf(false)
+    private val lockMessage = mutableStateOf("正在验证…")
+    private val canRetry = mutableStateOf(false)
+
+    /** 深链带来的服务器地址（非空表示要打开「同步配置」页）。 */
+    private val pendingSyncServer = mutableStateOf<String?>(null)
+
+    /** 深链带来的配对码（预填到同步配置页）。 */
+    private val pendingPairCode = mutableStateOf<String?>(null)
+
+    /** 系统验证进行中，避免重复拉起。 */
+    private var authInFlight = false
+
+    /** 验证弹窗关闭会触发一次 onResume，用它跳过循环触发。 */
+    private var skipNextResume = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -84,14 +101,19 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
         window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
 
         store = VaultStore(filesDir)
+        settings = dev.xiaoqiong.vkey.vault.AppSettings(this)
         vault.value = store.read()
         locked.value = vault.value != null
+        handleDeepLink(intent)
 
         setContent {
             MaterialTheme {
                 VkeyApp(
                     vault = vault.value,
                     locked = locked.value,
+                    lockMessage = lockMessage.value,
+                    canRetry = canRetry.value,
+                    onRetryLock = { showSystemAuth() },
                     onCreate = { data ->
                         vault.value = data
                         locked.value = false
@@ -102,17 +124,129 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                         vault.value = data
                         store.write(data)
                     },
+                    autoLockOnResume = settings.autoLockOnResume,
+                    onAutoLockChange = { settings.autoLockOnResume = it },
+                    serverUrl = settings.serverUrl,
+                    onServerUrlChange = { settings.serverUrl = it },
+                    pendingSyncServer = pendingSyncServer.value,
+                    pendingPairCode = pendingPairCode.value,
+                    onPendingHandled = {
+                        pendingSyncServer.value = null
+                        pendingPairCode.value = null
+                    },
                 )
             }
         }
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleDeepLink(intent)
+    }
+
+    /**
+     * 处理 `vkey://config?server=…` 与 `vkey://pair?code=…` 深链。
+     *
+     * - 配置深链：只写服务器地址，并打开「同步配置」页让用户输入配对码 / master_key；
+     * - 配对深链：预填配对码（免鉴权领取，无需先登录）。
+     *
+     * @param intent 启动或复用的 Intent（非 VIEW 或没有 data 时直接返回）
+     */
+    private fun handleDeepLink(intent: Intent?) {
+        if (intent?.action != Intent.ACTION_VIEW) return
+        val data = intent.dataString ?: return
+
+        val server = Links.parseServerConfig(data)
+        if (server != null) {
+            settings.serverUrl = server
+            pendingPairCode.value = null
+            pendingSyncServer.value = server
+            Toast.makeText(this, "服务器地址已设置：$server", Toast.LENGTH_LONG).show()
+            return
+        }
+
+        val code = Links.parsePairCodeLink(data)
+        if (code != null) {
+            pendingPairCode.value = code
+            pendingSyncServer.value = settings.serverUrl
+            Toast.makeText(this, "已识别配对码，请在「同步配置」里领取", Toast.LENGTH_LONG).show()
+        }
+    }
+
     override fun onStop() {
-        // 只要离开前台就要求重新验证（符合「进入即解锁」）
-        if (vault.value != null) {
+        // 默认不锁：用户已在系统层解锁过；需要在设置里打开「回前台重新解锁」
+        if (vault.value != null && settings.autoLockOnResume) {
             locked.value = true
         }
         super.onStop()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (skipNextResume) {
+            skipNextResume = false
+            return
+        }
+        if (vault.value != null && locked.value) {
+            showSystemAuth()
+        }
+    }
+
+    /**
+     * 拉起系统验证（指纹 / 面容 / 锁屏密码）。
+     *
+     * 说明：`BiometricPrompt` 关闭后会触发一次 onResume，用 `skipNextResume`
+     * 避免「取消 → 立刻重弹」的循环；需要用户主动点击才能再次验证。
+     */
+    private fun showSystemAuth() {
+        if (authInFlight) return
+        val allowed = androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_STRONG or
+            androidx.biometric.BiometricManager.Authenticators.DEVICE_CREDENTIAL
+        val km = getSystemService(KEYGUARD_SERVICE) as android.app.KeyguardManager
+        if (!km.isDeviceSecure) {
+            lockMessage.value = "请先在系统设置里设置锁屏密码或录入指纹"
+            canRetry.value = false
+            return
+        }
+        authInFlight = true
+        canRetry.value = false
+        lockMessage.value = "正在验证…"
+        val prompt = androidx.biometric.BiometricPrompt(
+            this,
+            androidx.core.content.ContextCompat.getMainExecutor(this),
+            object : androidx.biometric.BiometricPrompt.AuthenticationCallback() {
+                override fun onAuthenticationSucceeded(
+                    result: androidx.biometric.BiometricPrompt.AuthenticationResult,
+                ) {
+                    authInFlight = false
+                    locked.value = false
+                }
+
+                override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                    authInFlight = false
+                    skipNextResume = true
+                    lockMessage.value = "验证未通过：$errString"
+                    canRetry.value = true
+                }
+
+                override fun onAuthenticationFailed() {
+                    lockMessage.value = "未识别，请重试"
+                }
+            },
+        )
+        val info = androidx.biometric.BiometricPrompt.PromptInfo.Builder()
+            .setTitle("解锁 vkey")
+            .setSubtitle("使用指纹 / 面容 / 锁屏密码")
+            .setAllowedAuthenticators(allowed)
+            .build()
+        runCatching { prompt.authenticate(info) }
+            .onFailure {
+                authInFlight = false
+                skipNextResume = true
+                lockMessage.value = "无法启动系统验证：${it.message}"
+                canRetry.value = true
+            }
     }
 }
 
@@ -120,15 +254,36 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
 private fun VkeyApp(
     vault: VaultData?,
     locked: Boolean,
+    lockMessage: String,
+    canRetry: Boolean,
+    onRetryLock: () -> Unit,
     onCreate: (VaultData) -> Unit,
     onUnlock: () -> Unit,
     onLock: () -> Unit,
     onPersist: (VaultData) -> Unit,
+    autoLockOnResume: Boolean,
+    onAutoLockChange: (Boolean) -> Unit,
+    serverUrl: String,
+    onServerUrlChange: (String) -> Unit,
+    pendingSyncServer: String?,
+    pendingPairCode: String?,
+    onPendingHandled: () -> Unit,
 ) {
     when {
         vault == null -> SetupScreen(onCreate = onCreate)
-        locked -> LockScreen(onUnlock = onUnlock)
-        else -> VaultScreen(vault = vault, onLock = onLock, onPersist = onPersist)
+        locked -> LockScreen(message = lockMessage, canRetry = canRetry, onRetry = onRetryLock)
+        else -> VaultScreen(
+            vault = vault,
+            onLock = onLock,
+            onPersist = onPersist,
+            autoLockOnResume = autoLockOnResume,
+            onAutoLockChange = onAutoLockChange,
+            serverUrl = serverUrl,
+            onServerUrlChange = onServerUrlChange,
+            pendingSyncServer = pendingSyncServer,
+            pendingPairCode = pendingPairCode,
+            onPendingHandled = onPendingHandled,
+        )
     }
 }
 
@@ -179,69 +334,11 @@ private fun SetupScreen(onCreate: (VaultData) -> Unit) {
 }
 
 /**
- * 解锁页：进入应用即自动拉起系统验证（指纹 / 面容 / 锁屏密码），不提供"跳过"按钮。
- *
- * - `BiometricPrompt` 需要 `FragmentActivity`（MainActivity 已改为继承它）
- * - 设备无生物识别时，`DEVICE_CREDENTIAL` 会自动退到锁屏密码
- * - 设备完全没有锁屏 → 无法验证，提示需先设置锁屏
+ * 解锁页（纯展示）：真正的验证由 Activity 在 `onResume` 里拉起，
+ * 这里只负责显示状态与「点一下重试」。
  */
 @Composable
-private fun LockScreen(onUnlock: () -> Unit) {
-    val context = LocalContext.current
-    val activity = context as? androidx.fragment.app.FragmentActivity
-    var message by remember { mutableStateOf("正在验证…") }
-    var canRetry by remember { mutableStateOf(false) }
-
-    fun startAuth() {
-        val act = activity ?: run {
-            message = "当前上下文不支持系统验证"
-            canRetry = true
-            return
-        }
-        val manager = androidx.biometric.BiometricManager.from(act)
-        val allowed = androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_STRONG or
-            androidx.biometric.BiometricManager.Authenticators.DEVICE_CREDENTIAL
-        if (manager.canAuthenticate(allowed) != androidx.biometric.BiometricManager.BIOMETRIC_SUCCESS) {
-            // 没有生物识别/未设置锁屏：尝试直接走设备凭据
-            val km = act.getSystemService(Context.KEYGUARD_SERVICE) as android.app.KeyguardManager
-            if (!km.isDeviceSecure) {
-                message = "请先在系统设置里设置锁屏密码或录入指纹"
-                canRetry = true
-                return
-            }
-        }
-        val prompt = androidx.biometric.BiometricPrompt(
-            act,
-            ContextCompat.getMainExecutor(act),
-            object : androidx.biometric.BiometricPrompt.AuthenticationCallback() {
-                override fun onAuthenticationSucceeded(result: androidx.biometric.BiometricPrompt.AuthenticationResult) {
-                    onUnlock()
-                }
-
-                override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
-                    message = "验证未通过：$errString"
-                    canRetry = true
-                }
-
-                override fun onAuthenticationFailed() {
-                    message = "未识别，请重试"
-                }
-            },
-        )
-        val info = androidx.biometric.BiometricPrompt.PromptInfo.Builder()
-            .setTitle("解锁 vkey")
-            .setSubtitle("使用指纹 / 面容 / 锁屏密码")
-            .setAllowedAuthenticators(allowed)
-            .build()
-        runCatching { prompt.authenticate(info) }
-            .onFailure {
-                message = "无法启动系统验证：${it.message}"
-                canRetry = true
-            }
-    }
-
-    LaunchedEffect(Unit) { startAuth() }
-
+private fun LockScreen(message: String, canRetry: Boolean, onRetry: () -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -249,17 +346,13 @@ private fun LockScreen(onUnlock: () -> Unit) {
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
-            ) { if (canRetry) startAuth() },
+            ) { if (canRetry) onRetry() },
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Text("vkey 已锁定", style = MaterialTheme.typography.headlineSmall)
         Spacer(Modifier.height(12.dp))
-        Text(
-            message,
-            style = MaterialTheme.typography.bodyMedium,
-            textAlign = TextAlign.Center,
-        )
+        Text(message, style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center)
         if (canRetry) {
             Spacer(Modifier.height(8.dp))
             Text(
@@ -270,24 +363,39 @@ private fun LockScreen(onUnlock: () -> Unit) {
         }
     }
 }
-
-/**
- * 列表页。
- *
- * 悬浮按钮采用「全屏遮罩 + 绝对定位向上展开」：
- * - 外层 `Box` 铺满，展开时用透明遮罩接管点击（点空白处收起）；
- * - 动作按钮不参与 Scaffold 布局，也不做尺寸动画，因此不会被布局边界裁剪（FAB 阴影完整）。
- */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun VaultScreen(vault: VaultData, onLock: () -> Unit, onPersist: (VaultData) -> Unit) {
+private fun VaultScreen(
+    vault: VaultData,
+    onLock: () -> Unit,
+    onPersist: (VaultData) -> Unit,
+    autoLockOnResume: Boolean,
+    onAutoLockChange: (Boolean) -> Unit,
+    serverUrl: String,
+    onServerUrlChange: (String) -> Unit,
+    pendingSyncServer: String?,
+    pendingPairCode: String?,
+    onPendingHandled: () -> Unit,
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var showAdd by remember { mutableStateOf(false) }
     var showScan by remember { mutableStateOf(false) }
     var fabExpanded by remember { mutableStateOf(false) }
+    var showSettings by remember { mutableStateOf(false) }
+    var showSync by remember { mutableStateOf(false) }
+    // 深链带来的配对码：先固定下来再清除 pending，避免 SyncScreen 首帧读到 null
+    var syncPrefill by remember { mutableStateOf("") }
     // 逐帧时间源：进度条按真实时间连续推进（不再 500ms 一跳）
     var nowMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
+
+    LaunchedEffect(pendingSyncServer, pendingPairCode) {
+        if (pendingSyncServer != null || pendingPairCode != null) {
+            syncPrefill = pendingPairCode.orEmpty()
+            showSync = true
+            onPendingHandled()
+        }
+    }
 
     // 0 = 收起，1 = 完全展开；驱动按钮的位移与透明度
     val expandProgress by animateFloatAsState(
@@ -307,7 +415,10 @@ private fun VaultScreen(vault: VaultData, onLock: () -> Unit, onPersist: (VaultD
             topBar = {
                 TopAppBar(
                     title = { Text("vkey · ${vault.items.size} 条") },
-                    actions = { TextButton(onClick = onLock) { Text("锁定") } },
+                    actions = {
+                        TextButton(onClick = { showSettings = true }) { Text("设置") }
+                        TextButton(onClick = onLock) { Text("锁定") }
+                    },
                 )
             },
         ) { padding ->
@@ -412,6 +523,42 @@ private fun VaultScreen(vault: VaultData, onLock: () -> Unit, onPersist: (VaultD
         }
     }
 
+    if (showSettings) {
+        SettingsDialog(
+            autoLockOnResume = autoLockOnResume,
+            onAutoLockChange = onAutoLockChange,
+            serverUrl = serverUrl,
+            device = vault.device,
+            onOpenSync = {
+                showSettings = false
+                syncPrefill = ""
+                showSync = true
+            },
+            onDismiss = { showSettings = false },
+        )
+    }
+
+    if (showSync) {
+        dev.xiaoqiong.vkey.ui.SyncScreen(
+            masterKey = vault.master_key,
+            device = vault.device,
+            serverUrl = serverUrl,
+            initialPairCode = syncPrefill.takeIf { it.isNotBlank() },
+            onSaved = { config, newMasterKey ->
+                // 配对拿到的 master_key 才是账号密钥：以它为准（本地条目保留）
+                onPersist(
+                    vault.copy(
+                        master_key = newMasterKey ?: vault.master_key,
+                        device = config,
+                    ),
+                )
+            },
+            onServerUrlChange = onServerUrlChange,
+            onClearDevice = { onPersist(vault.copy(device = null)) },
+            onClose = { showSync = false },
+        )
+    }
+
     if (showScan) {
         dev.xiaoqiong.vkey.ui.ScanScreen(
             onResult = { item ->
@@ -438,6 +585,61 @@ private fun VaultScreen(vault: VaultData, onLock: () -> Unit, onPersist: (VaultD
             },
         )
     }
+}
+
+/** 设置：回前台是否重新解锁、同步配置入口（含当前配对状态）。 */
+@Composable
+private fun SettingsDialog(
+    autoLockOnResume: Boolean,
+    onAutoLockChange: (Boolean) -> Unit,
+    serverUrl: String,
+    device: DeviceConfig?,
+    onOpenSync: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var autoLock by remember { mutableStateOf(autoLockOnResume) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("设置") },
+        text = {
+            Column {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Checkbox(checked = autoLock, onCheckedChange = { autoLock = it })
+                    Text("回到前台时重新解锁")
+                }
+                Spacer(Modifier.height(12.dp))
+                Text("同步", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    "服务器：${device?.server_url ?: serverUrl.ifBlank { "（未设置）" }}",
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+                Text(
+                    "状态：" + if (device == null) {
+                        "未配置"
+                    } else {
+                        "已登录（${device.device_name}）"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                TextButton(onClick = {
+                    onAutoLockChange(autoLock)
+                    onOpenSync()
+                }) { Text("同步配置 / 配对") }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                onAutoLockChange(autoLock)
+                onDismiss()
+            }) { Text("保存") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
 }
 
 /**
@@ -564,27 +766,4 @@ private fun AddDialog(onDismiss: () -> Unit, onAdd: (String, String, String) -> 
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
     )
-}
-
-/** 复制到剪贴板；API 33+ 标记为敏感，避免出现在剪贴板预览里。 */
-private fun copyToClipboard(context: Context, text: String, sensitive: Boolean) {
-    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-    val label = if (sensitive) "vkey code" else "vkey"
-    val clip = ClipData.newPlainText(label, text)
-    if (sensitive && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-        clip.description.extras = android.os.PersistableBundle().apply {
-            putBoolean(android.content.ClipDescription.EXTRA_IS_SENSITIVE, true)
-        }
-    }
-    cm.setPrimaryClip(clip)
-}
-
-/** 清空剪贴板（仅在当前内容仍是我们写入的东西时才清，避免误删用户其它复制）。 */
-private fun clearClipboard(context: Context) {
-    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-    if (cm.primaryClipDescription?.label?.toString() == "vkey code") {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            cm.clearPrimaryClip()
-        }
-    }
 }

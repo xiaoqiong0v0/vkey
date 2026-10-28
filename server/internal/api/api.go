@@ -105,7 +105,8 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/", s.handleAPINotFound)
 
 	mux.HandleFunc("GET /{$}", s.handleIndex)
-	mux.HandleFunc("GET /pair", s.handlePairPage)
+	mux.HandleFunc("GET /pair", s.handlePairRedirect)
+	mux.HandleFunc("GET /pair/qr.png", s.handlePairQR)
 	mux.HandleFunc("GET /install.sh", s.handleInstallSH)
 	mux.HandleFunc("GET /install.ps1", s.handleInstallPS1)
 	mux.HandleFunc("GET /dl/{name}", s.handleArtifact)

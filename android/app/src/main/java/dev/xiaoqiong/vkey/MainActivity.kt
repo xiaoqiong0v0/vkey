@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.pager.HorizontalPager
@@ -71,6 +72,7 @@ import dev.xiaoqiong.vkey.sync.Links
 import dev.xiaoqiong.vkey.sync.SyncManager
 import dev.xiaoqiong.vkey.sync.SyncStats
 import dev.xiaoqiong.vkey.totp.Totp
+import dev.xiaoqiong.vkey.ui.IssuerIcon
 import dev.xiaoqiong.vkey.ui.clearClipboard
 import dev.xiaoqiong.vkey.ui.copyToClipboard
 import dev.xiaoqiong.vkey.ui.describeFailure
@@ -365,7 +367,10 @@ private fun SetupScreen(onCreate: (VaultData) -> Unit) {
             )
         }
         Spacer(Modifier.height(8.dp))
-        TextButton(onClick = { copyToClipboard(context, recoveryCode, sensitive = true) }) {
+        TextButton(onClick = {
+            copyToClipboard(context, recoveryCode, sensitive = true)
+            Toast.makeText(context, "恢复码已复制", Toast.LENGTH_SHORT).show()
+        }) {
             Text("复制恢复码")
         }
         Spacer(Modifier.height(8.dp))
@@ -645,6 +650,11 @@ private fun VaultScreen(
                                     nowMillis = nowMillis,
                                     onCopy = { code ->
                                         copyToClipboard(context, code, sensitive = true)
+                                        Toast.makeText(
+                                            context,
+                                            "验证码已复制，30 秒后自动清除",
+                                            Toast.LENGTH_SHORT,
+                                        ).show()
                                         scope.launch {
                                             delay(30_000)
                                             clearClipboard(context)
@@ -1097,8 +1107,14 @@ private fun TotpCard(
 
     Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors()) {
         Column(Modifier.padding(16.dp)) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Column {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                // 站点图标：先字母徽标，抓到 favicon 后覆盖（尺寸固定，行高不跳）
+                IssuerIcon(issuer = item.issuer, label = item.account)
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
                     Text(item.issuer.ifBlank { "(未命名)" }, style = MaterialTheme.typography.titleMedium)
                     Text(item.account, style = MaterialTheme.typography.bodySmall)
                 }

@@ -1,5 +1,6 @@
 package dev.xiaoqiong.vkey.net
 
+import android.util.Log
 import dev.xiaoqiong.vkey.crypto.Crypto
 import java.io.IOException
 import java.util.concurrent.TimeUnit
@@ -343,11 +344,19 @@ class VkeyApi(
         val response = try {
             signingClient.newCall(request).execute()
         } catch (e: IOException) {
+            // 只打方法/路径与异常摘要，绝不打 token、密文或明文
+            Log.w(HTTP_TAG, "${request.method} ${request.url.encodedPath} -> 0 " +
+                "code=network_error msg=${e.message}")
             throw ApiException("network_error", e.message ?: "网络请求失败", 0)
         }
         response.use {
             val text = response.body?.string().orEmpty()
-            if (!response.isSuccessful) throw parseError(response.code, text)
+            if (!response.isSuccessful) {
+                val error = parseError(response.code, text)
+                Log.w(HTTP_TAG, "${request.method} ${request.url.encodedPath} -> ${response.code} " +
+                    "code=${error.code} msg=${error.message}")
+                throw error
+            }
             if (text.isBlank()) throw ApiException("empty_body", "服务端返回空响应", response.code)
             return try {
                 json.decodeFromString<T>(text)
@@ -372,6 +381,9 @@ class VkeyApi(
     }
 
     companion object {
+        /** HTTP 失败日志 tag（`adb logcat -s vkey-http`）。 */
+        private const val HTTP_TAG = "vkey-http"
+
         private const val MAX_ITEMS_PER_PUSH = 500
         private const val ERROR_SNIPPET_LEN = 200
         private const val TIMEOUT_SECONDS = 20L

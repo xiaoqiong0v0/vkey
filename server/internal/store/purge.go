@@ -4,12 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 )
 
 // 物理删除（purge）的唯一入口。
 //
 // 策略：只有已逻辑删除的墓碑（deleted_at 非空且非 0）可以被物理删除；
-// 该操作仅由运维在控制台执行 `vkeyd purge --yes`，不暴露任何 HTTP 接口。
+// 该操作仅由运维在控制台执行 `vkeyd purge`（交互勾选）或 `vkeyd purge --yes`，
+// 不暴露任何 HTTP 接口。
 
 // PurgeItemsSQL 是唯一允许的物理删除语句。
 //
@@ -65,6 +67,68 @@ func (s *Store) PurgePending(ctx context.Context) ([]PurgeTarget, error) {
 //   - 实际影响行数必须等于事务内统计到的墓碑行数；
 //   - 删除前后「非墓碑行数」必须完全一致（防止 WHERE 被放宽导致误删）。
 func (s *Store) Purge(ctx context.Context) (int64, error) {
+	return s.purgeInTx(ctx, func(ctx context.Context, tx *sql.Tx) (int64, int64, error) {
+		tombstones, err := countTombstones(ctx, tx)
+		if err != nil {
+			return 0, 0, err
+		}
+		if tombstones == 0 {
+			return 0, 0, nil
+		}
+		res, err := tx.ExecContext(ctx, PurgeItemsSQL)
+		if err != nil {
+			return 0, 0, fmt.Errorf("store: 物理删除墓碑失败: %w", err)
+		}
+		affected, err := res.RowsAffected()
+		if err != nil {
+			return 0, 0, fmt.Errorf("store: 读取删除条数失败: %w", err)
+		}
+		return affected, tombstones, nil
+	})
+}
+
+// PurgeIDs 在单个事务内物理删除指定 id 的墓碑条目（交互式勾选后使用）。
+//
+// 参数：ids 为待删除条目的 id（通常来自 PurgePending）；重复 id 会被去重。
+// 返回：实际删除的条数（ids 为空时为 0）。
+// 防御断言与 Purge 一致，且额外要求「实际影响行数 == 去重后的 id 数」——
+// 若某个 id 在删除时已不是墓碑（状态被并发改动），事务回滚并返回 ErrPurgeGuard。
+func (s *Store) PurgeIDs(ctx context.Context, ids []string) (int64, error) {
+	uniq := dedupeIDs(ids)
+	if len(uniq) == 0 {
+		return 0, nil
+	}
+	return s.purgeInTx(ctx, func(ctx context.Context, tx *sql.Tx) (int64, int64, error) {
+		args := make([]any, len(uniq))
+		for i, id := range uniq {
+			args[i] = id
+		}
+		sqlText := `DELETE FROM items WHERE id IN (` +
+			strings.TrimSuffix(strings.Repeat("?,", len(uniq)), ",") + `) AND ` + tombstonePredicate
+		res, err := tx.ExecContext(ctx, sqlText, args...)
+		if err != nil {
+			return 0, 0, fmt.Errorf("store: 物理删除墓碑失败: %w", err)
+		}
+		affected, err := res.RowsAffected()
+		if err != nil {
+			return 0, 0, fmt.Errorf("store: 读取删除条数失败: %w", err)
+		}
+		return affected, int64(len(uniq)), nil
+	})
+}
+
+// purgeExec 在事务内执行一次物理删除。
+//
+// 返回：affected 为实际影响行数；expected 为预期影响行数（0 表示无需删除）。
+type purgeExec func(ctx context.Context, tx *sql.Tx) (affected, expected int64, err error)
+
+// purgeInTx 在单事务内执行物理删除并做一致性断言。
+//
+// expected 为 0 时视为空操作（不提交任何删除），返回 0。
+// 断言（任一不满足即回滚并返回 ErrPurgeGuard）：
+//   - 实际影响行数必须等于预期行数；
+//   - 删除前后「非墓碑行数」必须完全一致（防止 WHERE 被放宽导致误删）。
+func (s *Store) purgeInTx(ctx context.Context, exec purgeExec) (int64, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, fmt.Errorf("store: 开启事务失败: %w", err)
@@ -75,24 +139,15 @@ func (s *Store) Purge(ctx context.Context) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	tombstones, err := countTombstones(ctx, tx)
+	affected, expected, err := exec(ctx, tx)
 	if err != nil {
 		return 0, err
 	}
-	if tombstones == 0 {
+	if expected == 0 {
 		return 0, nil
 	}
-
-	res, err := tx.ExecContext(ctx, PurgeItemsSQL)
-	if err != nil {
-		return 0, fmt.Errorf("store: 物理删除墓碑失败: %w", err)
-	}
-	affected, err := res.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("store: 读取删除条数失败: %w", err)
-	}
-	if affected != tombstones {
-		return 0, fmt.Errorf("%w（墓碑 %d 条，实际影响 %d 条）", ErrPurgeGuard, tombstones, affected)
+	if affected != expected {
+		return 0, fmt.Errorf("%w（预期 %d 条，实际影响 %d 条）", ErrPurgeGuard, expected, affected)
 	}
 
 	aliveAfter, err := countNonTombstones(ctx, tx)
@@ -107,6 +162,23 @@ func (s *Store) Purge(ctx context.Context) (int64, error) {
 		return 0, fmt.Errorf("store: 提交事务失败: %w", err)
 	}
 	return affected, nil
+}
+
+// dedupeIDs 按首次出现顺序去重，并丢弃空字符串。
+func dedupeIDs(ids []string) []string {
+	seen := make(map[string]struct{}, len(ids))
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
 }
 
 // countTombstones 统计已逻辑删除的行数。

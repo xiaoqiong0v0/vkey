@@ -1,6 +1,7 @@
 package dev.xiaoqiong.vkey.ui
 
 import android.os.Build
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Box
@@ -212,328 +213,341 @@ fun SyncScreen(
     val pairedServer = device?.server_url
     val serverChanged = pairedServer != null && normalizeUrl(url) != normalizeUrl(pairedServer)
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("同步配置") },
-                navigationIcon = { TextButton(onClick = onClose) { Text("返回") } },
+    // 页面级切换（表单 ↔ 扫码）：与顶层页面共用同一套转场，进入扫码走前进方向，关闭走返回方向
+    AnimatedContent(
+        targetState = showScan,
+        modifier = Modifier.fillMaxSize(),
+        transitionSpec = {
+            vkeyPageTransition(
+                forward = targetState,
+                animated = !vkeyPageAnimationsDisabled(context),
             )
         },
-    ) { padding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .verticalScroll(rememberScrollState())
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            // ---------------- 安全 ----------------
-            Card(Modifier.fillMaxWidth()) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
+        label = "vkey-sync-scan",
+    ) { scanning ->
+        if (scanning) {
+            ScanScreen(
+                onResult = null,
+                onConfigLink = { server ->
+                    url = server
+                    onServerUrlChange(server)
+                    showScan = false
+                    info = "服务器地址已设置：$server"
+                },
+                onPairCode = { code ->
+                    pairCodeInput = code
+                    showScan = false
+                    info = "已识别配对码，点「领取并完成配置」继续"
+                },
+                onCancel = { showScan = false },
+            )
+        } else {
+            Scaffold(
+                topBar = {
+                    TopAppBar(
+                        title = { Text("同步配置") },
+                        navigationIcon = { TextButton(onClick = onClose) { Text("返回") } },
+                    )
+                },
+            ) { padding ->
+                Column(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                        .fillMaxSize()
+                        .padding(padding)
+                        .verticalScroll(rememberScrollState())
+                        .padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    Column(Modifier.weight(1f)) {
-                        Text("回到前台时重新解锁", style = MaterialTheme.typography.bodyLarge)
-                        Text(
-                            "关闭时：从后台回来直接进入（系统已解锁过）",
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                    }
-                    androidx.compose.material3.Switch(
-                        checked = autoLockOnResume,
-                        onCheckedChange = onAutoLockChange,
-                    )
-                }
-            }
-
-            // ---------------- 状态 ----------------
-            Card(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(16.dp)) {
-                    Text(
-                        text = if (device == null) "未配置" else "已登录",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Medium,
-                    )
-                    if (device == null) {
-                        Text(
-                            "输入 master_key 或配对码完成配置；也可以先扫服务端二维码自动填好地址。",
-                            style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.padding(top = 4.dp),
-                        )
-                    } else {
-                        Text("设备：${device.device_name}", style = MaterialTheme.typography.bodySmall)
-                        Text("服务器：${device.server_url}", style = MaterialTheme.typography.bodySmall)
-                        Text("账号：${device.username}", style = MaterialTheme.typography.bodySmall)
-                    }
-                }
-            }
-
-            if (busy != null) {
-                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                Text(busy.orEmpty(), style = MaterialTheme.typography.bodySmall)
-            }
-            info?.let {
-                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
-            }
-            error?.let {
-                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-            }
-
-            // ---------------- 服务器地址 ----------------
-            Card(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(16.dp)) {
-                    OutlinedTextField(
-                        value = url,
-                        onValueChange = { url = it },
-                        label = { Text("同步服务地址") },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Button(
-                            onClick = {
-                                onServerUrlChange(url)
-                                info = "服务器地址已保存"
-                            },
-                            enabled = busy == null && url.trim().isNotEmpty(),
-                            modifier = Modifier.weight(1f),
-                        ) { Text("保存地址") }
-                        Button(
-                            onClick = { showScan = true },
-                            enabled = busy == null,
-                            modifier = Modifier.weight(1f),
-                        ) { Text("扫码") }
-                    }
-                    Text(
-                        "扫码可识别服务端 /pair 或主页的二维码（内容只有服务器地址）",
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.padding(top = 4.dp),
-                    )
-                }
-            }
-
-            if (device != null) {
-                // ---------------- 已登录：条目同步 ----------------
-                Card(Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(16.dp)) {
-                        Text("条目同步", style = MaterialTheme.typography.titleMedium)
-                        Text(
-                            "把本机改动推送到服务端，并拉回其它设备的改动（端到端加密，服务端只见密文）。",
-                            style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.padding(top = 4.dp),
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        Button(
-                            onClick = doSync,
-                            enabled = busy == null,
-                            modifier = Modifier.fillMaxWidth(),
-                        ) { Text("立即同步") }
-                        val stats = syncStats
-                        if (stats != null) {
-                            Text(
-                                "已推送 ${stats.pushed} / 已吊销 ${stats.revoked} / " +
-                                    "已拉取 ${stats.pulled} / 跳过 ${stats.skipped} / 冲突 ${stats.conflicts}",
-                                style = MaterialTheme.typography.bodySmall,
-                                modifier = Modifier.padding(top = 8.dp),
-                            )
-                        }
-                        Text(
-                            "最近同步：${formatSyncTime(lastSyncAt)}",
-                            style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.padding(top = 4.dp),
-                        )
-                    }
-                }
-
-                // ---------------- 已登录：生成配对码 ----------------
-                Card(Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(16.dp)) {
-                        Text("给新设备配对", style = MaterialTheme.typography.titleMedium)
-                        Text(
-                            "生成一次性配对码（10 分钟内有效、单次可用）。在新设备输入它，或扫描它的二维码内容即可接入同一账号。",
-                            style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.padding(top = 4.dp),
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        Button(
-                            onClick = doGenerate,
-                            enabled = busy == null,
-                            modifier = Modifier.fillMaxWidth(),
-                        ) { Text(if (generated == null) "生成配对码" else "重新生成") }
-
-                        val pairCode = generated
-                        if (pairCode != null) {
-                            Spacer(Modifier.height(12.dp))
-                            // 直接给二维码：另一台设备扫码即可带走 master_key（不用手抄）
-                            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                                QrCodeImage(
-                                    content = "vkey://pair?code=${pairCode.codeText}&server=${normalizeUrl(url)}",
-                                    size = 220.dp,
+                    // ---------------- 安全 ----------------
+                    Card(Modifier.fillMaxWidth()) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 8.dp),
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text("回到前台时重新解锁", style = MaterialTheme.typography.bodyLarge)
+                                Text(
+                                    "关闭时：从后台回来直接进入（系统已解锁过）",
+                                    style = MaterialTheme.typography.bodySmall,
                                 )
                             }
-                            Spacer(Modifier.height(8.dp))
+                            androidx.compose.material3.Switch(
+                                checked = autoLockOnResume,
+                                onCheckedChange = onAutoLockChange,
+                            )
+                        }
+                    }
+
+                    // ---------------- 状态 ----------------
+                    Card(Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(16.dp)) {
                             Text(
-                                text = pairCode.codeText,
-                                fontFamily = FontFamily.Monospace,
-                                fontSize = 17.sp,
+                                text = if (device == null) "未配置" else "已登录",
+                                style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Medium,
                             )
-                            Text(
-                                text = if (remainingSeconds > 0) {
-                                    "剩余有效期 ${formatCountdown(remainingSeconds)}"
-                                } else {
-                                    "已过期，请重新生成"
-                                },
-                                style = MaterialTheme.typography.bodySmall,
-                                color = if (remainingSeconds > 0) {
-                                    MaterialTheme.colorScheme.primary
-                                } else {
-                                    MaterialTheme.colorScheme.error
-                                },
-                                modifier = Modifier.padding(top = 4.dp),
-                            )
-                            Spacer(Modifier.height(4.dp))
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Button(
-                                    onClick = {
-                                        copyToClipboard(context, pairCode.codeText, sensitive = false)
-                                        info = "配对码已复制"
-                                    },
-                                    enabled = remainingSeconds > 0,
-                                ) { Text("复制配对码") }
-                                TextButton(onClick = { showScan = true }) { Text("扫别人的码") }
+                            if (device == null) {
+                                Text(
+                                    "输入 master_key 或配对码完成配置；也可以先扫服务端二维码自动填好地址。",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    modifier = Modifier.padding(top = 4.dp),
+                                )
+                            } else {
+                                Text("设备：${device.device_name}", style = MaterialTheme.typography.bodySmall)
+                                Text("服务器：${device.server_url}", style = MaterialTheme.typography.bodySmall)
+                                Text("账号：${device.username}", style = MaterialTheme.typography.bodySmall)
                             }
                         }
                     }
-                }
 
-                HorizontalDivider()
+                    if (busy != null) {
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        Text(busy.orEmpty(), style = MaterialTheme.typography.bodySmall)
+                    }
+                    info?.let {
+                        Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                    }
+                    error?.let {
+                        Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                    }
 
-                // ---------------- 切服务器 / 断开 ----------------
-                Card(Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(16.dp)) {
-                        Text("设备管理", style = MaterialTheme.typography.titleMedium)
-                        if (serverChanged) {
+                    // ---------------- 服务器地址 ----------------
+                    Card(Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(16.dp)) {
+                            OutlinedTextField(
+                                value = url,
+                                onValueChange = { url = it },
+                                label = { Text("同步服务地址") },
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Button(
+                                    onClick = {
+                                        onServerUrlChange(url)
+                                        info = "服务器地址已保存"
+                                    },
+                                    enabled = busy == null && url.trim().isNotEmpty(),
+                                    modifier = Modifier.weight(1f),
+                                ) { Text("保存地址") }
+                                Button(
+                                    onClick = { showScan = true },
+                                    enabled = busy == null,
+                                    modifier = Modifier.weight(1f),
+                                ) { Text("扫码") }
+                            }
                             Text(
-                                "填写的地址与当前配对不一致：更换服务器后需要重新配对。",
+                                "扫码可识别服务端 /pair 或主页的二维码（内容只有服务器地址）",
                                 style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.error,
                                 modifier = Modifier.padding(top = 4.dp),
                             )
                         }
-                        Spacer(Modifier.height(8.dp))
+                    }
+
+                    if (device != null) {
+                        // ---------------- 已登录：条目同步 ----------------
+                        Card(Modifier.fillMaxWidth()) {
+                            Column(Modifier.padding(16.dp)) {
+                                Text("条目同步", style = MaterialTheme.typography.titleMedium)
+                                Text(
+                                    "把本机改动推送到服务端，并拉回其它设备的改动（端到端加密，服务端只见密文）。",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    modifier = Modifier.padding(top = 4.dp),
+                                )
+                                Spacer(Modifier.height(8.dp))
+                                Button(
+                                    onClick = doSync,
+                                    enabled = busy == null,
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) { Text("立即同步") }
+                                val stats = syncStats
+                                if (stats != null) {
+                                    Text(
+                                        "已推送 ${stats.pushed} / 已吊销 ${stats.revoked} / " +
+                                            "已拉取 ${stats.pulled} / 跳过 ${stats.skipped} / 冲突 ${stats.conflicts}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        modifier = Modifier.padding(top = 8.dp),
+                                    )
+                                }
+                                Text(
+                                    "最近同步：${formatSyncTime(lastSyncAt)}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    modifier = Modifier.padding(top = 4.dp),
+                                )
+                            }
+                        }
+
+                        // ---------------- 已登录：生成配对码 ----------------
+                        Card(Modifier.fillMaxWidth()) {
+                            Column(Modifier.padding(16.dp)) {
+                                Text("给新设备配对", style = MaterialTheme.typography.titleMedium)
+                                Text(
+                                    "生成一次性配对码（10 分钟内有效、单次可用）。在新设备输入它，或扫描它的二维码内容即可接入同一账号。",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    modifier = Modifier.padding(top = 4.dp),
+                                )
+                                Spacer(Modifier.height(8.dp))
+                                Button(
+                                    onClick = doGenerate,
+                                    enabled = busy == null,
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) { Text(if (generated == null) "生成配对码" else "重新生成") }
+
+                                val pairCode = generated
+                                if (pairCode != null) {
+                                    Spacer(Modifier.height(12.dp))
+                                    // 直接给二维码：另一台设备扫码即可带走 master_key（不用手抄）
+                                    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                                        QrCodeImage(
+                                            content = "vkey://pair?code=${pairCode.codeText}&server=${normalizeUrl(url)}",
+                                            size = 220.dp,
+                                        )
+                                    }
+                                    Spacer(Modifier.height(8.dp))
+                                    Text(
+                                        text = pairCode.codeText,
+                                        fontFamily = FontFamily.Monospace,
+                                        fontSize = 17.sp,
+                                        fontWeight = FontWeight.Medium,
+                                    )
+                                    Text(
+                                        text = if (remainingSeconds > 0) {
+                                            "剩余有效期 ${formatCountdown(remainingSeconds)}"
+                                        } else {
+                                            "已过期，请重新生成"
+                                        },
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = if (remainingSeconds > 0) {
+                                            MaterialTheme.colorScheme.primary
+                                        } else {
+                                            MaterialTheme.colorScheme.error
+                                        },
+                                        modifier = Modifier.padding(top = 4.dp),
+                                    )
+                                    Spacer(Modifier.height(4.dp))
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        Button(
+                                            onClick = {
+                                                copyToClipboard(context, pairCode.codeText, sensitive = false)
+                                                info = "配对码已复制"
+                                            },
+                                            enabled = remainingSeconds > 0,
+                                        ) { Text("复制配对码") }
+                                        TextButton(onClick = { showScan = true }) { Text("扫别人的码") }
+                                    }
+                                }
+                            }
+                        }
+
+                        HorizontalDivider()
+
+                        // ---------------- 切服务器 / 断开 ----------------
+                        Card(Modifier.fillMaxWidth()) {
+                            Column(Modifier.padding(16.dp)) {
+                                Text("设备管理", style = MaterialTheme.typography.titleMedium)
+                                if (serverChanged) {
+                                    Text(
+                                        "填写的地址与当前配对不一致：更换服务器后需要重新配对。",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.error,
+                                        modifier = Modifier.padding(top = 4.dp),
+                                    )
+                                }
+                                Spacer(Modifier.height(8.dp))
+                                OutlinedTextField(
+                                    value = deviceName,
+                                    onValueChange = { deviceName = it },
+                                    label = { Text("设备名（重新配对时使用）") },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                                Spacer(Modifier.height(8.dp))
+                                TextButton(
+                                    onClick = { confirm = ConfirmKind.CLEAR_DEVICE },
+                                    enabled = busy == null,
+                                ) { Text("断开配对（清除本机设备材料）") }
+                            }
+                        }
+                    } else {
+                        // ---------------- 未配置：两条配置路径 ----------------
+                        Card(Modifier.fillMaxWidth()) {
+                            Column(Modifier.padding(16.dp)) {
+                                Text("用 master_key 登录", style = MaterialTheme.typography.titleMedium)
+                                Text(
+                                    "恢复码 / master_key（52 位）。本机会生成并保存自己的设备密钥。",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    modifier = Modifier.padding(top = 4.dp),
+                                )
+                                Spacer(Modifier.height(8.dp))
+                                OutlinedTextField(
+                                    value = masterKeyInput,
+                                    onValueChange = { masterKeyInput = it },
+                                    label = { Text("master_key") },
+                                    singleLine = true,
+                                    visualTransformation = PasswordVisualTransformation(),
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                                Spacer(Modifier.height(8.dp))
+                                Button(
+                                    onClick = doLogin,
+                                    enabled = busy == null,
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) { Text("用 master_key 完成配置") }
+                            }
+                        }
+
+                        Card(Modifier.fillMaxWidth()) {
+                            Column(Modifier.padding(16.dp)) {
+                                Text("用配对码领取", style = MaterialTheme.typography.titleMedium)
+                                Text(
+                                    "在已登录的设备上「生成配对码」，把 52 位配对码输入这里。配对成功后本机主密钥以账号为准（本机已有条目保留）。",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    modifier = Modifier.padding(top = 4.dp),
+                                )
+                                Spacer(Modifier.height(8.dp))
+                                OutlinedTextField(
+                                    value = pairCodeInput,
+                                    onValueChange = { pairCodeInput = it },
+                                    label = { Text("配对码（可含 - 与空格）") },
+                                    singleLine = true,
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                                Spacer(Modifier.height(8.dp))
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Button(
+                                        onClick = doPair,
+                                        enabled = busy == null,
+                                        modifier = Modifier.weight(1f),
+                                    ) { Text("领取并完成配置") }
+                                    Button(
+                                        onClick = { showScan = true },
+                                        enabled = busy == null,
+                                        modifier = Modifier.weight(1f),
+                                    ) { Text("扫码输入") }
+                                }
+                            }
+                        }
+
                         OutlinedTextField(
                             value = deviceName,
                             onValueChange = { deviceName = it },
-                            label = { Text("设备名（重新配对时使用）") },
+                            label = { Text("设备名") },
                             singleLine = true,
                             modifier = Modifier.fillMaxWidth(),
                         )
-                        Spacer(Modifier.height(8.dp))
-                        TextButton(
-                            onClick = { confirm = ConfirmKind.CLEAR_DEVICE },
-                            enabled = busy == null,
-                        ) { Text("断开配对（清除本机设备材料）") }
                     }
                 }
-            } else {
-                // ---------------- 未配置：两条配置路径 ----------------
-                Card(Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(16.dp)) {
-                        Text("用 master_key 登录", style = MaterialTheme.typography.titleMedium)
-                        Text(
-                            "恢复码 / master_key（52 位）。本机会生成并保存自己的设备密钥。",
-                            style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.padding(top = 4.dp),
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        OutlinedTextField(
-                            value = masterKeyInput,
-                            onValueChange = { masterKeyInput = it },
-                            label = { Text("master_key") },
-                            singleLine = true,
-                            visualTransformation = PasswordVisualTransformation(),
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        Button(
-                            onClick = doLogin,
-                            enabled = busy == null,
-                            modifier = Modifier.fillMaxWidth(),
-                        ) { Text("用 master_key 完成配置") }
-                    }
-                }
-
-                Card(Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(16.dp)) {
-                        Text("用配对码领取", style = MaterialTheme.typography.titleMedium)
-                        Text(
-                            "在已登录的设备上「生成配对码」，把 52 位配对码输入这里。配对成功后本机主密钥以账号为准（本机已有条目保留）。",
-                            style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.padding(top = 4.dp),
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        OutlinedTextField(
-                            value = pairCodeInput,
-                            onValueChange = { pairCodeInput = it },
-                            label = { Text("配对码（可含 - 与空格）") },
-                            singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(
-                                onClick = doPair,
-                                enabled = busy == null,
-                                modifier = Modifier.weight(1f),
-                            ) { Text("领取并完成配置") }
-                            Button(
-                                onClick = { showScan = true },
-                                enabled = busy == null,
-                                modifier = Modifier.weight(1f),
-                            ) { Text("扫码输入") }
-                        }
-                    }
-                }
-
-                OutlinedTextField(
-                    value = deviceName,
-                    onValueChange = { deviceName = it },
-                    label = { Text("设备名") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
             }
         }
-    }
-
-    if (showScan) {
-        ScanScreen(
-            onResult = null,
-            onConfigLink = { server ->
-                url = server
-                onServerUrlChange(server)
-                showScan = false
-                info = "服务器地址已设置：$server"
-            },
-            onPairCode = { code ->
-                pairCodeInput = code
-                showScan = false
-                info = "已识别配对码，点「领取并完成配置」继续"
-            },
-            onCancel = { showScan = false },
-        )
     }
 
     if (confirm == ConfirmKind.CLEAR_DEVICE) {

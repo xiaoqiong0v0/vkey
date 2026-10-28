@@ -49,7 +49,8 @@ data class TotpItem(
  * 单条 WebAuthn 凭据（对应 `shared/examples/item-webauthn.json`）。
  *
  * 手机端**只读 + 可吊销**：不新增、不修改，明文里只保留用于展示的
- * `rp_id` / `username` / `display_name` / `created_at`，私钥等字段不落本地模型。
+ * `rp_id` / `username` / `display_name` / `label` / `user_handle` / `created_at`，
+ * 私钥、`credential_id` 等字段不落本地模型。
  *
  * 同步字段与 [TotpItem] 同义：
  * - [version] 服务端版本号；
@@ -69,6 +70,10 @@ data class WebAuthnItem(
     val username: String = "",
     /** 展示名，明文里的 `display_name`。 */
     val displayName: String = "",
+    /** 列表主标题，明文里的 `label`（WebAuthn 为用户名或 RP）。 */
+    val label: String = "",
+    /** WebAuthn `user.id` 原始字节的 base64url，明文里的 `user_handle`（仅展示/区分，不含私钥）。 */
+    val userHandle: String = "",
     /** 凭据创建时间（unix 秒），明文里的 `created_at`。 */
     val createdAt: Long = 0L,
     /** 服务端版本号；0 = 服务端尚无此条目。 */

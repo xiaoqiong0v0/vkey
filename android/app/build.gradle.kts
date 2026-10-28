@@ -42,6 +42,11 @@ android {
     packaging {
         resources.excludes += setOf("/META-INF/{AL2.0,LGPL2.1}")
     }
+
+    // 同步/HTTP 层会调用 android.util.Log：单测里按默认值（no-op）返回，避免抛 "not mocked"
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 // 单元测试直接读取仓库内的协议向量，避免复制副本导致漂移。

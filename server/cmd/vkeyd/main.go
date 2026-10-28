@@ -5,7 +5,9 @@
 //	vkeyd init   --db <path> [--username default] [--master-key <base32>]
 //	vkeyd serve  --db <path> --listen :8080 [--domain <域名>] [--artifacts-dir <dir>] [--set-require-master-pw=true|false]
 //	vkeyd policy set --db <path> --require-master-pw=<bool>
-//	vkeyd purge  --db <path> [--dry-run] [--yes]
+//	vkeyd purge  --db <path> [--dry-run | --yes]
+//
+// purge 无开关且在终端里执行时进入交互式勾选，选择要物理删除的墓碑。
 package main
 
 import (
@@ -13,6 +15,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -254,23 +257,38 @@ func setPolicy(ctx context.Context, st *store.Store, require bool) error {
 	return nil
 }
 
+// purgeMode 是 purge 子命令的执行模式。
+type purgeMode int
+
+const (
+	// purgeModeList 只列清单（无终端且未给 --yes，无法交互）。
+	purgeModeList purgeMode = iota
+	// purgeModeDryRun 显式 --dry-run：只列清单。
+	purgeModeDryRun
+	// purgeModeInteractive 无开关且 stdin 是终端：交互式勾选后删除。
+	purgeModeInteractive
+	// purgeModeDelete --yes：直接删全部墓碑。
+	purgeModeDelete
+)
+
 // runPurge 处理 `purge` 子命令：物理删除已逻辑删除的墓碑条目。
 //
 // 只允许在控制台/运维手动执行，不提供任何 HTTP 接口。
-// 默认（不带 --yes）为 dry-run，只打印候选条目而不写库。
+// 模式选择见 resolvePurgeMode：终端里无开关时为交互式勾选，
+// 非终端无 --yes 时只列清单并提示加 --yes。
 func runPurge(args []string) error {
 	fs := flag.NewFlagSet("purge", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	dbPath := fs.String("db", "", "sqlite 数据库路径（必填）")
-	dryRun := fs.Bool("dry-run", false, "只列出待物理删除的墓碑，不写库（默认行为）")
-	yes := fs.Bool("yes", false, "真正执行物理删除")
+	dryRun := fs.Bool("dry-run", false, "只列出待物理删除的墓碑，不写库")
+	yes := fs.Bool("yes", false, "不交互，直接删除全部墓碑")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *dbPath == "" {
 		return errors.New("purge: 缺少 --db")
 	}
-	doDelete, note := resolvePurgeMode(*dryRun, *yes)
+	mode, note := resolvePurgeMode(*dryRun, *yes, isTerminal(os.Stdin))
 	if note != "" {
 		fmt.Fprintf(os.Stderr, "vkeyd: %s\n", note)
 	}
@@ -282,9 +300,20 @@ func runPurge(args []string) error {
 	defer func() { _ = st.Close() }()
 
 	ctx := context.Background()
-	if !doDelete {
-		return purgeDryRun(ctx, st)
+	switch mode {
+	case purgeModeInteractive:
+		return purgeInteractive(ctx, st, os.Stdin, os.Stdout)
+	case purgeModeDelete:
+		return purgeDeleteAll(ctx, st)
+	case purgeModeList:
+		return purgeDryRun(ctx, st, os.Stdout, true)
+	default:
+		return purgeDryRun(ctx, st, os.Stdout, false)
 	}
+}
+
+// purgeDeleteAll 直接物理删除全部墓碑（--yes）。
+func purgeDeleteAll(ctx context.Context, st *store.Store) error {
 	n, err := st.Purge(ctx)
 	if err != nil {
 		return err
@@ -298,34 +327,50 @@ func runPurge(args []string) error {
 }
 
 // purgeDryRun 打印将被物理删除的墓碑清单，不写库。
-func purgeDryRun(ctx context.Context, st *store.Store) error {
+//
+// 参数：hintNoTTY 为 true 时追加「没有终端、请用 --yes」的提示。
+func purgeDryRun(ctx context.Context, st *store.Store, w io.Writer, hintNoTTY bool) error {
 	targets, err := st.PurgePending(ctx)
 	if err != nil {
 		return err
 	}
 	if len(targets) == 0 {
-		fmt.Printf("%s\n", msgNoTombstone)
+		fmt.Fprintf(w, "%s\n", msgNoTombstone)
 		return nil
 	}
-	fmt.Printf("dry-run：以下 %d 条墓碑将被物理删除（未写库）\n", len(targets))
+	fmt.Fprintf(w, "以下 %d 条墓碑将被物理删除（未写库）\n", len(targets))
 	for _, t := range targets {
-		fmt.Printf("  id=%s kind=%s rp_id=%s deleted_at=%d version=%d\n",
+		fmt.Fprintf(w, "  id=%s kind=%s rp_id=%s deleted_at=%d version=%d\n",
 			shortID(t.ID), t.Kind, t.RPID, t.DeletedAt, t.Version)
 	}
-	fmt.Printf("合计：%d 条（加 --yes 执行删除）\n", len(targets))
+	if hintNoTTY {
+		fmt.Fprintf(w, "合计：%d 条\n", len(targets))
+		fmt.Fprintf(w, "%s\n", msgPurgeNoTTY)
+		return nil
+	}
+	fmt.Fprintf(w, "合计：%d 条（加 --yes 执行删除）\n", len(targets))
 	return nil
 }
 
 // resolvePurgeMode 决定 purge 的执行模式。
 //
-// 参数：dryRun / yes 为命令行开关。
-// 返回：doDelete 表示是否真正删除；note 为需要提示给用户的说明（无提示时为空）。
+// 参数：dryRun / yes 为命令行开关；isTTY 表示 stdin 是否连接终端。
+// 返回：mode 为执行模式；note 为需要提示给用户的说明（无提示时为空）。
 // 两个开关同时给出时以 --dry-run 为准（更安全）。
-func resolvePurgeMode(dryRun, yes bool) (doDelete bool, note string) {
+func resolvePurgeMode(dryRun, yes, isTTY bool) (mode purgeMode, note string) {
 	if dryRun && yes {
-		return false, "--dry-run 与 --yes 同时给出，以 --dry-run 为准（未写库）"
+		return purgeModeDryRun, "--dry-run 与 --yes 同时给出，以 --dry-run 为准（未写库）"
 	}
-	return yes, ""
+	if dryRun {
+		return purgeModeDryRun, ""
+	}
+	if yes {
+		return purgeModeDelete, ""
+	}
+	if isTTY {
+		return purgeModeInteractive, ""
+	}
+	return purgeModeList, ""
 }
 
 // shortID 返回用于展示的 id 前缀。
@@ -345,13 +390,17 @@ func usage(w *os.File) {
   vkeyd init   --db <path> [--username default] [--master-key <base32>]
   vkeyd serve  --db <path> --listen :8080 [--domain <域名>] [--artifacts-dir <dir>] [--set-require-master-pw=true|false]
   vkeyd policy set --db <path> --require-master-pw=<bool>
-  vkeyd purge  --db <path> [--dry-run] [--yes]
+  vkeyd purge  --db <path> [--dry-run | --yes]
 
 说明：
   init   建库并创建账号，stdout 只打印一次 master_key（base32 无填充）
   serve  启动 HTTP 服务；TLS 由 nginx 终止
   policy 修改服务端策略（是否强制主密码）
-  purge  物理删除已逻辑删除的条目（墓碑）；默认 dry-run，仅控制台执行，无 HTTP 接口
+  purge  物理删除已逻辑删除的条目（墓碑）；仅控制台执行，无 HTTP 接口
+         无开关且在终端里 → 交互勾选（空格选择、回车确认、y 删除）
+         无开关且没有终端 → 只列清单，提示加 --yes
+         加 --dry-run 只列清单；加 --yes 直接删除全部墓碑
+         远端服务器需 ssh -t 才有终端，否则会退化为只列清单
 
 退出码：0 成功；非 0 失败（错误信息输出到 stderr）。
 `)

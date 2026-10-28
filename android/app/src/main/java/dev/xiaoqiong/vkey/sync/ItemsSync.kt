@@ -1,5 +1,6 @@
 package dev.xiaoqiong.vkey.sync
 
+import android.util.Log
 import dev.xiaoqiong.vkey.crypto.Crypto
 import dev.xiaoqiong.vkey.net.ApiException
 import dev.xiaoqiong.vkey.net.ItemWrite
@@ -40,6 +41,17 @@ data class SyncStats(
 data class SyncOutcome(val vault: VaultData, val stats: SyncStats)
 
 /**
+ * 实时查询「密钥」页的结果。
+ *
+ * @property items 解密成功的 WebAuthn 条目（已按 id 去重、已过滤墓碑）
+ * @property skipped 解密或明文解析失败而跳过的条数（不抛错，仅计数）
+ */
+data class WebAuthnLive(
+    val items: List<WebAuthnItem> = emptyList(),
+    val skipped: Int = 0,
+)
+
+/**
  * 条目同步引擎（TOTP + WebAuthn 两条独立通道）。
  *
  * 流程（[syncBlocking]）：先 push（TOTP 脏条目 + WebAuthn 吊销墓碑，`POST /items`），
@@ -62,6 +74,9 @@ data class SyncOutcome(val vault: VaultData, val stats: SyncStats)
  */
 object ItemsSync {
 
+    /** 同步链路日志 tag（`adb logcat -s vkey-sync`）。 */
+    private const val TAG = "vkey-sync"
+
     /** TOTP 条目的外层 `rp_id`（协议 §5.1 固定值，不随 issuer 变化）。 */
     const val RP_ID_TOTP: String = "totp"
 
@@ -75,6 +90,15 @@ object ItemsSync {
     private const val PULL_PAGE_LIMIT = 1000
 
     private const val STATUS_APPLIED = "applied"
+
+    /** 跳过原因：密文为空或 AEAD 打开失败（密钥不对/密文损坏）。 */
+    private const val REASON_OPEN_FAILED = "open-failed"
+
+    /** 跳过原因：明文 kind 不符或 JSON 解析失败。 */
+    private const val REASON_PARSE_FAILED = "parse-failed"
+
+    /** 服务端写入失败原因：`base_version` 不是当前版本。 */
+    private const val REASON_STALE_WRITE = "stale_write"
 
     /** 当前 unix 秒。 */
     fun nowSeconds(): Long = System.currentTimeMillis() / 1000
@@ -106,14 +130,24 @@ object ItemsSync {
         val masterKey = SyncManager.parseMasterKey(source.master_key)
         val api = SyncManager.authorizedApi(config)
 
+        Log.d(TAG, "push start")
         val afterTotpPush = pushTotp(api, masterKey, source.items, now)
         val afterRevokePush = pushWebAuthnTombstones(api, masterKey, source.webAuthn, now)
+        Log.d(
+            TAG,
+            "push done totp=${afterTotpPush.pushed} revoked=${afterRevokePush.revoked} " +
+                "conflicts=${afterTotpPush.conflicts + afterRevokePush.conflicts}",
+        )
         val afterPull = pull(
             api = api,
             masterKey = masterKey,
             items = afterTotpPush.items,
             webAuthn = afterRevokePush.items,
             since = source.seq,
+        )
+        Log.d(
+            TAG,
+            "pull done pulled=${afterPull.pulled} skipped=${afterPull.skipped} seq=${afterPull.seq}",
         )
 
         val stats = SyncStats(
@@ -133,6 +167,101 @@ object ItemsSync {
             ),
             stats = stats,
         )
+    }
+
+    // ------------------------------------------------------------------
+    // 实时查询 / 吊销：WebAuthn（不走本地同步）
+    // ------------------------------------------------------------------
+
+    /**
+     * 实时拉取全部 WebAuthn 凭据（`GET /items?since=0`，翻页到结束）。
+     *
+     * 「密钥」页不做本地同步：手机不持有凭据，只实时查看/吊销，所以每次都从 0 开始全量扫描，
+     * 逐个 `next` 推进到没有新条目为止，并过滤外层 `kind == "webauthn"` 且 `deleted_at == 0`。
+     *
+     * @param api 已带签名的客户端
+     * @param masterKey 32B master_key
+     * @return 解密成功的只读条目（解密/解析失败的条目被跳过）
+     * @throws ApiException 网络或服务端错误
+     */
+    fun fetchWebAuthnLive(api: VkeyApi, masterKey: ByteArray): List<WebAuthnItem> =
+        fetchWebAuthnLiveDetailed(api, masterKey).items
+
+    /**
+     * 同 [fetchWebAuthnLive]，额外返回被跳过的条数（便于 UI/日志区分「真的没有」与「解不开」）。
+     *
+     * @param api 已带签名的客户端
+     * @param masterKey 32B master_key
+     * @return 条目与被跳过的条数
+     * @throws ApiException 网络或服务端错误
+     */
+    fun fetchWebAuthnLiveDetailed(api: VkeyApi, masterKey: ByteArray): WebAuthnLive {
+        val byId = LinkedHashMap<String, WebAuthnItem>()
+        var total = 0
+        var skipped = 0
+        var cursor = 0L
+        var pages = 0
+
+        Log.d(TAG, "webauthn fetch start since=0")
+        while (pages < MAX_PULL_PAGES) {
+            pages++
+            val page = api.listItems(cursor)
+            Log.d(TAG, "page items=${page.items.size} next=${page.next}")
+            for (remote in page.items) {
+                if (remote.kind != ItemJson.KIND_WEBAUTHN) continue
+                if (remote.deletedAt != 0L) continue
+                total++
+                val decoded = decodeLiveWebAuthn(remote, masterKey)
+                val item = decoded.item
+                if (item == null) {
+                    skipped++
+                    // 只打 id / kind / 原因，绝不打密文或明文
+                    Log.w(TAG, "skip id=${remote.id} kind=${remote.kind} reason=${decoded.reason}")
+                    continue
+                }
+                byId[item.id] = item
+            }
+            val next = page.next
+            // 用响应 next 推进：next 没有前进 = 没有更新条目（末页的 next 即服务端 seq）
+            if (next <= cursor) break
+            cursor = next
+        }
+        Log.d(TAG, "webauthn fetch done total=$total ok=${byId.size} skipped=$skipped")
+        return WebAuthnLive(items = byId.values.toList(), skipped = skipped)
+    }
+
+    /**
+     * 吊销一条 WebAuthn 凭据：推 `deleted_at = now` 的墓碑。
+     *
+     * 以条目当前的服务端 `version` 作为 `base_version`；墓碑不带密文
+     * （协议 §4.7：墓碑的 `ct`/`nonce` 可为空串），是最简合法形式。
+     *
+     * @param api 已带签名的客户端
+     * @param item 待吊销条目（必须带服务端 `version`）
+     * @param now 墓碑时间（unix 秒，测试可注入）
+     * @throws ApiException 网络/服务端错误，或写入未被应用（`code` 取服务端 `reason`）
+     */
+    fun revokeWebAuthn(api: VkeyApi, item: WebAuthnItem, now: Long = nowSeconds()) {
+        val write = ItemWrite(
+            id = item.id,
+            kind = ItemJson.KIND_WEBAUTHN,
+            rpId = item.rpId,
+            ct = "",
+            nonce = "",
+            baseVersion = item.version,
+            updatedAt = now,
+            deletedAt = now,
+        )
+        val result = api.pushItems(listOf(write)).results.firstOrNull()
+            ?: throw ApiException("invalid_response", "服务端未返回写入结果", 0)
+        if (result.status != STATUS_APPLIED) {
+            val code = result.reason ?: result.status
+            val message = when (code) {
+                REASON_STALE_WRITE -> "该凭据已在其它设备变更，请刷新后重试"
+                else -> "服务端拒绝写入（$code）"
+            }
+            throw ApiException(code, message, 0)
+        }
     }
 
     // ------------------------------------------------------------------
@@ -268,6 +397,7 @@ object ItemsSync {
         var forceRemote = false
         var pages = 0
 
+        Log.d(TAG, "pull start since=$since")
         while (pages < MAX_PULL_PAGES) {
             pages++
             val page = api.listItems(cursor)
@@ -392,6 +522,26 @@ object ItemsSync {
     }
 
     /**
+     * 解密一条服务端 WebAuthn 条目并转成只读模型（实时查询用，不落库）。
+     *
+     * @param remote 外层 `kind == webauthn` 且非墓碑的条目
+     * @param masterKey 32B master_key
+     * @return 解码结果：成功给条目，失败给原因
+     */
+    private fun decodeLiveWebAuthn(remote: SyncedItem, masterKey: ByteArray): LiveDecode {
+        val plain = decrypt(masterKey, remote.id, remote.ct, remote.nonce)
+            ?: return LiveDecode(reason = REASON_OPEN_FAILED)
+        val plainKind = ItemJson.kindOf(plain)
+        if (plainKind != null && plainKind != ItemJson.KIND_WEBAUTHN) {
+            return LiveDecode(reason = REASON_PARSE_FAILED)
+        }
+        val item = runCatching {
+            ItemJson.decodeWebAuthn(plain, remote.id, remote.version, remote.updatedAt)
+        }.getOrNull() ?: return LiveDecode(reason = REASON_PARSE_FAILED)
+        return LiveDecode(item = item)
+    }
+
+    /**
      * 解密条目密文。
      *
      * @return 明文 JSON；密文为空、编码非法或 AEAD 校验失败时返回 null
@@ -495,4 +645,12 @@ object ItemsSync {
 
     /** 单条拉取条目的处理结果。 */
     private enum class MergeResult { MERGED, SKIPPED, IGNORED }
+
+    /**
+     * 实时查询单条的解码结果。
+     *
+     * @property item 解析成功的条目
+     * @property reason 失败原因（`open-failed` / `parse-failed`），成功时为 null
+     */
+    private data class LiveDecode(val item: WebAuthnItem? = null, val reason: String? = null)
 }

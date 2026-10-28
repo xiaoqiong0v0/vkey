@@ -1,6 +1,8 @@
 package dev.xiaoqiong.vkey.sync
 
 import dev.xiaoqiong.vkey.crypto.Crypto
+import dev.xiaoqiong.vkey.net.ApiException
+import dev.xiaoqiong.vkey.net.VkeyApi
 import dev.xiaoqiong.vkey.vault.DeviceConfig
 import dev.xiaoqiong.vkey.vault.TotpItem
 import dev.xiaoqiong.vkey.vault.VaultData
@@ -340,6 +342,103 @@ class ItemsSyncTest {
     }
 
     // ------------------------------------------------------------------
+    // 密钥页实时查询 / 吊销（不落本地）
+    // ------------------------------------------------------------------
+
+    @Test
+    fun liveQueryFiltersTombstonesAndUnknownKindsThenSkipsBrokenCiphertext() {
+        // 密文/密钥对不上（用别人的 master_key 加密）→ 应跳过而不是抛错
+        val broken = """{"id":"$BROKEN_ID","kind":"webauthn","rp_id":"bad.example","ct":"AAAA",""" +
+            """"nonce":"AAAA","version":3,"updated_at":${NOW - 5},"deleted_at":0}"""
+        val unknown = """{"id":"$UNKNOWN_ID","kind":"passkey","rp_id":"x","ct":"AAAA","nonce":"AAAA",""" +
+            """"version":4,"updated_at":${NOW - 4},"deleted_at":0}"""
+        server.enqueue(
+            page(
+                remoteWebAuthnJson(version = 2L, updatedAt = NOW - 10),
+                remoteWebAuthnJson(version = 3L, updatedAt = NOW - 5, deletedAt = NOW - 5),
+                unknown,
+                broken,
+                next = 9L,
+            ),
+        )
+        // 末页：next 与服务端 seq 相同 → 停止翻页
+        server.enqueue(page(next = 9L))
+
+        val live = ItemsSync.fetchWebAuthnLiveDetailed(liveApi(), mac)
+
+        assertEquals(1, live.items.size)
+        val item = live.items.single()
+        assertEquals(WA_ID, item.id)
+        assertEquals("example.com", item.rpId)
+        assertEquals("alice", item.username)
+        assertEquals("alice", item.label)
+        assertEquals("Alice", item.displayName)
+        assertEquals("YWxpY2UtMDAx", item.userHandle)
+        assertEquals(NOW, item.createdAt)
+        // 只有密文坏掉的那条计入 skipped（墓碑与未知 kind 属于过滤，不算跳过）
+        assertEquals(1, live.skipped)
+        // 明文里的私钥字段不落模型：模型上根本没有该字段，无法被误用
+        assertEquals(2, server.requestCount)
+        assertEquals("/api/v1/items?since=0", server.takeRequest().path)
+        assertEquals("/api/v1/items?since=9", server.takeRequest().path)
+    }
+
+    @Test
+    fun liveQueryFollowsNextCursorUntilNoNewItems() {
+        server.enqueue(page(remoteWebAuthnJson(version = 5L, updatedAt = NOW - 10), next = 5L))
+        server.enqueue(page(remoteWebAuthnJson(version = 9L, updatedAt = NOW - 5, id = WA_ID_2), next = 9L))
+        server.enqueue(page(next = 9L))
+
+        val items = ItemsSync.fetchWebAuthnLive(liveApi(), mac)
+
+        assertEquals(3, server.requestCount)
+        assertEquals("/api/v1/items?since=0", server.takeRequest().path)
+        assertEquals("/api/v1/items?since=5", server.takeRequest().path)
+        assertEquals("/api/v1/items?since=9", server.takeRequest().path)
+        assertEquals(listOf(WA_ID, WA_ID_2), items.map { it.id })
+    }
+
+    @Test
+    fun revokeWebAuthnPushesMinimalTombstoneWithCurrentVersion() {
+        server.enqueue(applied(WA_ID, version = 7L))
+        val item = WebAuthnItem(
+            id = WA_ID,
+            rpId = "example.com",
+            username = "alice",
+            version = 6L,
+            updatedAt = NOW - 10,
+            syncedUpdatedAt = NOW - 10,
+        )
+
+        ItemsSync.revokeWebAuthn(liveApi(), item, now = NOW)
+
+        val request = server.takeRequest()
+        assertEquals("/api/v1/items", request.path)
+        val element = firstWrite(request.body.readUtf8())
+        assertEquals(WA_ID, element.str("id"))
+        assertEquals("webauthn", element.str("kind"))
+        assertEquals("example.com", element.str("rp_id"))
+        assertEquals("", element.str("ct"))
+        assertEquals("", element.str("nonce"))
+        assertEquals(6L, element.long("base_version"))
+        assertEquals(NOW, element.long("updated_at"))
+        assertEquals(NOW, element.long("deleted_at"))
+    }
+
+    @Test
+    fun revokeWebAuthnSurfacesServerReasonAsApiException() {
+        server.enqueue(conflict(WA_ID, version = 9L))
+        val item = WebAuthnItem(id = WA_ID, rpId = "example.com", version = 6L)
+
+        val error = runCatching { ItemsSync.revokeWebAuthn(liveApi(), item, now = NOW) }.exceptionOrNull()
+
+        assertTrue("应抛 ApiException，实际 $error", error is ApiException)
+        assertEquals("stale_write", (error as ApiException).code)
+        // 本地语义失败（未被应用）：没有 HTTP 状态码
+        assertEquals(0, error.status)
+    }
+
+    // ------------------------------------------------------------------
     // 夹具
     // ------------------------------------------------------------------
 
@@ -356,7 +455,7 @@ class ItemsSyncTest {
             device_name = "unit-test",
             username = "default",
             seed = Crypto.b64urlEncode(seed),
-            token = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+            token = TOKEN,
         ),
     )
 
@@ -396,25 +495,34 @@ class ItemsSyncTest {
     /**
      * 构造一条服务端 WebAuthn 条目（用同一 master_key 加密，模拟 Fedora 端的写入）。
      *
+     * @param id 条目 id（默认 [WA_ID]，多页用例里区分两条）
      * @param deletedAt 非 0 时生成墓碑（无密文）
      */
     private fun remoteWebAuthnJson(
         version: Long,
         updatedAt: Long,
         deletedAt: Long = 0L,
+        id: String = WA_ID,
     ): String {
         if (deletedAt != 0L) {
-            return """{"id":"$WA_ID","kind":"webauthn","rp_id":"example.com","ct":"","nonce":"",""" +
+            return """{"id":"$id","kind":"webauthn","rp_id":"example.com","ct":"","nonce":"",""" +
                 """"version":$version,"updated_at":$updatedAt,"deleted_at":$deletedAt}"""
         }
         val plain = """{"kind":"webauthn","rp_id":"example.com","rp_name":"Example",""" +
-            """"user_handle":"YWxpY2UtMDAx","username":"alice","display_name":"Alice",""" +
-            """"credential_id":"M9HCCwug9BJ6tdhNArxdUw","alg":-7,"created_at":$NOW}"""
+            """"user_handle":"YWxpY2UtMDAx","username":"alice","label":"alice","display_name":"Alice",""" +
+            """"credential_id":"M9HCCwug9BJ6tdhNArxdUw","alg":-7,""" +
+            """"private_key":"MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg","created_at":$NOW}"""
         val nonce = ByteArray(Crypto.NONCE_LEN) { 9 }
-        val ct = Crypto.sealItem(mac, WA_ID, plain.toByteArray(Charsets.UTF_8), nonce)
-        return """{"id":"$WA_ID","kind":"webauthn","rp_id":"example.com",""" +
+        val ct = Crypto.sealItem(mac, id, plain.toByteArray(Charsets.UTF_8), nonce)
+        return """{"id":"$id","kind":"webauthn","rp_id":"example.com",""" +
             """"ct":"${Crypto.b64urlEncode(ct)}","nonce":"${Crypto.b64urlEncode(nonce)}",""" +
             """"version":$version,"updated_at":$updatedAt,"deleted_at":0}"""
+    }
+
+    /** 直接构造带签名材料、指向 MockWebServer 的客户端（密钥页实时查询/吊销用）。 */
+    private fun liveApi(): VkeyApi = VkeyApi(server.url("/").toString().trimEnd('/')).apply {
+        token = TOKEN
+        deviceSeed = seed
     }
 
     private fun page(vararg items: String, next: Long): MockResponse =
@@ -443,7 +551,10 @@ class ItemsSyncTest {
     companion object {
         private const val ID = "01J9Z6Q3R8T5V7X9Y2B4C6D8E0"
         private const val WA_ID = "01J9Z6Q3R8T5V7X9Y2B4C6D8E1"
+        private const val WA_ID_2 = "01J9Z6Q3R8T5V7X9Y2B4C6D8E3"
         private const val UNKNOWN_ID = "01J9Z6Q3R8T5V7X9Y2B4C6D8E2"
+        private const val BROKEN_ID = "01J9Z6Q3R8T5V7X9Y2B4C6D8E4"
+        private const val TOKEN = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
         private const val NOW = 1_761_436_800L
     }
 }

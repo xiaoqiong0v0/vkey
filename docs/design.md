@@ -205,6 +205,20 @@ GET  /api/v1/health
 13. **CTAPHID 响应首字节必须是状态码**（成功 = `0x00` + 裸 CBOR；错误 = 单字节状态码）。去掉成功响应的 `0x00` 会让 Chrome 把 CBOR 首字节当状态码读（实测 `GetInfo` 报 error 166 = `0xA6` = map(6) 头），整条链路 0/4 全挂
 14. **passkey 站点要求 `rk`+`uv` 能力**：`GetInfo.options` 缺任一项，Chrome 在发命令前就判 `kMissingCapability`（表现为弹窗只给二维码/一直等插入），加 `--vmodule=device/fido/*=3` 可看到 `authenticator_request_dialog_model.cc` 的 UI step
 
+### 8.1 服务端与运维踩坑（2026-10 实测）
+
+1. **墓碑写入会不可逆销毁密文**：客户端推 `deleted_at != 0` 的墓碑时，服务端把 `ciphertext`/`nonce` 一并清空（协议允许空串）。
+   实测事故：旧版 Android 把本地标记删除的 webauthn 条目批量推成墓碑，**抹掉了 Fedora 侧 21 条 passkey**，只能从备份恢复。
+   → 纪律：客户端**不得把非本机创建的条目推成墓碑**；服务端若要支持事后恢复，墓碑应保留密文（当前实现仍会清空，恢复依赖备份）。
+2. **`cp vkeyd.db` 不等于备份**：SQLite 的 WAL 里可能还有未 checkpoint 的最新写入，只拷主文件会得到「旧状态」。
+   实测：`cp` 出来的两份备份 sha256 完全相同，而它们的产生时间差了 1 小时。
+   → 一律用 `server/deploy/backup.sh`（SQLite backup API，天然含 WAL）。
+3. **恢复数据后必须同步 `meta.seq`**：直接改 `items.version` 而不同步 `meta['seq:<user_id>']`，会让 `GET /items` 的 `next` 停在旧值，客户端每轮都会把同一页再拉一遍（实测 `total=42 ok=21`）。
+4. **访问日志已脱敏**：`journalctl -u vkeyd` 只有 `METHOD path -> status (ms)`，无 token / 无 body / 无签名；22 条关键词命中全是外部扫描器探测（`/.aws/credentials`、`/user_secrets.yml` → 404）与路由名本身。
+   → 该结论有实测支撑，但**新增日志时必须复查**，别把 `X-Vkey-Sig` 或 body 打进日志。
+5. **备份加密用 GPG 非对称**：服务器只留公钥（`secret=0 public=1`），私钥只在运维方本机；加密需 `--trust-model always`（公钥无信任网）。
+   备份产物 `data/backups/vkeyd-<ts>.db.gpg`，cron 每日 04:17，保留 30 天，加密前做 `integrity_check` + 条数自检。
+
 ---
 
 ## 9. 里程碑

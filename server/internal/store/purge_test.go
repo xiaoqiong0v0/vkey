@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -136,5 +137,58 @@ func TestPurgeSQLGuardsTombstone(t *testing.T) {
 	}
 	if !strings.Contains(PurgeItemsSQL, "IS NOT NULL") || !strings.Contains(PurgeItemsSQL, "!= 0") {
 		t.Fatalf("删除语句条件不完整: %s", PurgeItemsSQL)
+	}
+}
+
+// TestPurgeIDsDeletesOnlySelected 验证按 id 删除只影响勾选的墓碑。
+func TestPurgeIDsDeletesOnlySelected(t *testing.T) {
+	st := newPurgeTestStore(t, testItems())
+	ctx := context.Background()
+
+	n, err := st.PurgeIDs(ctx, []string{"item-tomb-a", "item-tomb-a"})
+	if err != nil {
+		t.Fatalf("PurgeIDs: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("删除条数 = %d，期望 1（重复 id 已去重）", n)
+	}
+	if got := countAll(t, st); got != 2 {
+		t.Fatalf("删除后条目数 = %d，期望 2", got)
+	}
+	var ids []string
+	rows, err := st.DB().QueryContext(ctx, `SELECT id FROM items ORDER BY id`)
+	if err != nil {
+		t.Fatalf("查询剩余条目: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			t.Fatalf("扫描剩余条目: %v", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("遍历剩余条目: %v", err)
+	}
+	if len(ids) != 2 || ids[0] != "item-alive" || ids[1] != "item-tomb-b" {
+		t.Fatalf("剩余条目 = %v，期望 [item-alive item-tomb-b]", ids)
+	}
+	// 空 ids 为无操作。
+	if n, err := st.PurgeIDs(ctx, nil); err != nil || n != 0 {
+		t.Fatalf("空 ids PurgeIDs = (%d, %v)，期望 (0, nil)", n, err)
+	}
+}
+
+// TestPurgeIDsGuardsNonTombstone 验证勾选了非墓碑 id 时回滚并返回 ErrPurgeGuard。
+func TestPurgeIDsGuardsNonTombstone(t *testing.T) {
+	st := newPurgeTestStore(t, testItems())
+	ctx := context.Background()
+
+	if _, err := st.PurgeIDs(ctx, []string{"item-tomb-a", "item-alive"}); !errors.Is(err, ErrPurgeGuard) {
+		t.Fatalf("PurgeIDs 错误 = %v，期望 ErrPurgeGuard", err)
+	}
+	if got := countAll(t, st); got != 3 {
+		t.Fatalf("回滚后条目数 = %d，期望 3", got)
 	}
 }

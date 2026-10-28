@@ -5,6 +5,7 @@ import android.os.Bundle
 import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.compose.setContent
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.clickable
@@ -67,12 +68,15 @@ import androidx.compose.ui.unit.sp
 import dev.xiaoqiong.vkey.sync.ItemJson
 import dev.xiaoqiong.vkey.sync.ItemsSync
 import dev.xiaoqiong.vkey.sync.Links
+import dev.xiaoqiong.vkey.sync.SyncManager
 import dev.xiaoqiong.vkey.sync.SyncStats
 import dev.xiaoqiong.vkey.totp.Totp
 import dev.xiaoqiong.vkey.ui.clearClipboard
 import dev.xiaoqiong.vkey.ui.copyToClipboard
 import dev.xiaoqiong.vkey.ui.describeFailure
 import dev.xiaoqiong.vkey.ui.formatSyncTime
+import dev.xiaoqiong.vkey.ui.vkeyPageAnimationsDisabled
+import dev.xiaoqiong.vkey.ui.vkeyPageTransition
 import dev.xiaoqiong.vkey.vault.Base32
 import dev.xiaoqiong.vkey.vault.DeviceConfig
 import dev.xiaoqiong.vkey.vault.TotpItem
@@ -80,10 +84,12 @@ import dev.xiaoqiong.vkey.vault.VaultData
 import dev.xiaoqiong.vkey.vault.VaultStore
 import dev.xiaoqiong.vkey.vault.WebAuthnItem
 import dev.xiaoqiong.vkey.vault.withLegacyWebAuthnMigrated
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -96,6 +102,20 @@ private const val PAGE_COUNT = 2
 
 /** 密钥凭据创建时间的展示格式。 */
 private const val CREATED_AT_PATTERN = "yyyy-MM-dd HH:mm"
+
+/**
+ * 库内的顶层页面。
+ *
+ * [depth] 是层级序号：数字变大 = 进入更深一层（前进），变小 = 返回。
+ * 转场方向只由它判定，不靠调用点各自猜。
+ *
+ * @property depth 层级序号（主页为 0）
+ */
+private enum class VkeyPage(val depth: Int) {
+    HOME(0),
+    SYNC(1),
+    SCAN(1),
+}
 
 /** 应用入口：持有库状态与「自动锁定」逻辑，UI 全部在 Compose 里。 */
 class MainActivity : androidx.fragment.app.FragmentActivity() {
@@ -409,9 +429,9 @@ private fun VaultScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var showAdd by remember { mutableStateOf(false) }
-    var showScan by remember { mutableStateOf(false) }
     var fabExpanded by remember { mutableStateOf(false) }
-    var showSync by remember { mutableStateOf(false) }
+    // 当前顶层页面：转场方向的唯一依据（按 VkeyPage.depth 比较前后两层）
+    var topPage by remember { mutableStateOf(VkeyPage.HOME) }
     // 待确认的删除 / 吊销目标：null = 没有弹窗（所有删除都必须二次确认）
     var pendingDelete by remember { mutableStateOf<TotpItem?>(null) }
     var pendingRevoke by remember { mutableStateOf<WebAuthnItem?>(null) }
@@ -481,10 +501,75 @@ private fun VaultScreen(
         }
     }
 
+    // ---- 密钥页：实时查询服务端（手机不持有凭据，不做本地同步）----
+    // 展示源只来自这里的实时结果，不再读 vault.webAuthn
+    var liveWebAuthn by remember { mutableStateOf<List<WebAuthnItem>>(emptyList()) }
+    // 上次实时拉取被跳过的条数（解密/解析失败），与列表一起展示便于定位「真的没有」还是「解不开」
+    var webAuthnSkipped by remember { mutableStateOf(0) }
+    var webAuthnLoading by remember { mutableStateOf(false) }
+    var webAuthnLoadError by remember { mutableStateOf<String?>(null) }
+    var webAuthnActionError by remember { mutableStateOf<String?>(null) }
+
+    /**
+     * 实时拉取密钥列表（`GET /items?since=0` 翻页到结束）。
+     *
+     * 未配对（无 device）时清空数据并交给页面显示引导。
+     */
+    val loadWebAuthn: suspend () -> Unit = {
+        val config = latestVault.device
+        if (config == null) {
+            liveWebAuthn = emptyList()
+            webAuthnSkipped = 0
+            webAuthnLoadError = null
+            webAuthnLoading = false
+        } else {
+            webAuthnLoading = true
+            webAuthnLoadError = null
+            webAuthnActionError = null
+            try {
+                val masterKey = SyncManager.parseMasterKey(latestVault.master_key)
+                val api = SyncManager.authorizedApi(config)
+                val live = withContext(Dispatchers.IO) {
+                    ItemsSync.fetchWebAuthnLiveDetailed(api, masterKey)
+                }
+                liveWebAuthn = live.items
+                webAuthnSkipped = live.skipped
+            } catch (t: Throwable) {
+                webAuthnLoadError = describeFailure(t)
+            } finally {
+                webAuthnLoading = false
+            }
+        }
+    }
+
+    /** 吊销：服务端推墓碑，成功后重新实时拉取；失败把 code/message 留在列表上方。 */
+    val revokeWebAuthn: (WebAuthnItem) -> Unit = { item ->
+        scope.launch {
+            val config = latestVault.device
+            if (config == null) {
+                webAuthnActionError = "先完成同步配置"
+            } else {
+                webAuthnActionError = null
+                try {
+                    val api = SyncManager.authorizedApi(config)
+                    withContext(Dispatchers.IO) { ItemsSync.revokeWebAuthn(api, item) }
+                    loadWebAuthn()
+                } catch (t: Throwable) {
+                    webAuthnActionError = describeFailure(t)
+                }
+            }
+        }
+    }
+
+    // 滑动/切到「密钥」页时自动实时加载（settledPage 避免拖动过程中反复请求）
+    LaunchedEffect(pagerState.settledPage, vault.device) {
+        if (pagerState.settledPage == PAGE_WEBAUTHN) loadWebAuthn()
+    }
+
     LaunchedEffect(pendingSyncServer, pendingPairCode) {
         if (pendingSyncServer != null || pendingPairCode != null) {
             syncPrefill = pendingPairCode.orEmpty()
-            showSync = true
+            topPage = VkeyPage.SYNC
             onPendingHandled()
         }
     }
@@ -507,159 +592,175 @@ private fun VaultScreen(
         if (pagerState.currentPage != PAGE_2FA) fabExpanded = false
     }
 
-    Box(Modifier.fillMaxSize()) {
-        // 墓碑条目仍在库里（等下次同步推送），但 UI 不显示；非 totp 条目不属于 2FA 页
-        val visibleTotp = vault.items.filter { it.kind == ItemJson.KIND_TOTP && !it.deleted }
-        val visibleWebAuthn = vault.webAuthn.filterNot { it.deleted }
-        Scaffold(
-            topBar = {
-                TopAppBar(
-                    title = {
-                        Text(
-                            "vkey · 2FA ${visibleTotp.size} · 密钥 ${visibleWebAuthn.size}",
-                            style = MaterialTheme.typography.titleMedium,
-                        )
-                    },
-                    actions = {
-                        TextButton(onClick = { syncPrefill = ""; showSync = true }) { Text("设置") }
-                        TextButton(onClick = onLock) { Text("锁定") }
-                    },
-                )
-            },
-        ) { padding ->
-            Column(Modifier.fillMaxSize().padding(padding)) {
-                TabRow(selectedTabIndex = pagerState.currentPage) {
-                    Tab(
-                        selected = pagerState.currentPage == PAGE_2FA,
-                        onClick = { scope.launch { pagerState.animateScrollToPage(PAGE_2FA) } },
-                        text = { Text("2FA") },
-                    )
-                    Tab(
-                        selected = pagerState.currentPage == PAGE_WEBAUTHN,
-                        onClick = { scope.launch { pagerState.animateScrollToPage(PAGE_WEBAUTHN) } },
-                        text = { Text("密钥") },
-                    )
-                }
-                HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { page ->
-                    when (page) {
-                        PAGE_2FA -> TotpList(
-                            entries = visibleTotp,
-                            nowMillis = nowMillis,
-                            onCopy = { code ->
-                                copyToClipboard(context, code, sensitive = true)
-                                scope.launch {
-                                    delay(30_000)
-                                    clearClipboard(context)
-                                }
+    // 顶层页面转场：前进时新页从右滑入、返回时从左滑入，方向只由 VkeyPage.depth 判定
+    AnimatedContent(
+        targetState = topPage,
+        modifier = Modifier.fillMaxSize(),
+        transitionSpec = {
+            vkeyPageTransition(
+                forward = targetState.depth > initialState.depth,
+                animated = !vkeyPageAnimationsDisabled(context),
+            )
+        },
+        label = "vkey-page",
+    ) { target ->
+        when (target) {
+            // 主页：页签 / FAB / 遮罩一起参与转场
+            VkeyPage.HOME -> Box(Modifier.fillMaxSize()) {
+                // 墓碑条目仍在库里（等下次同步推送），但 UI 不显示；非 totp 条目不属于 2FA 页
+                val visibleTotp = vault.items.filter { it.kind == ItemJson.KIND_TOTP && !it.deleted }
+                Scaffold(
+                    topBar = {
+                        TopAppBar(
+                            title = {
+                                Text(
+                                    "vkey · 2FA ${visibleTotp.size} · 密钥 ${liveWebAuthn.size}",
+                                    style = MaterialTheme.typography.titleMedium,
+                                )
                             },
-                            onDelete = { pendingDelete = it },
+                            actions = {
+                                TextButton(onClick = { syncPrefill = ""; topPage = VkeyPage.SYNC }) { Text("设置") }
+                                TextButton(onClick = onLock) { Text("锁定") }
+                            },
                         )
-                        else -> WebAuthnList(
-                            entries = visibleWebAuthn,
-                            onRevoke = { pendingRevoke = it },
-                        )
+                    },
+                ) { padding ->
+                    Column(Modifier.fillMaxSize().padding(padding)) {
+                        TabRow(selectedTabIndex = pagerState.currentPage) {
+                            Tab(
+                                selected = pagerState.currentPage == PAGE_2FA,
+                                onClick = { scope.launch { pagerState.animateScrollToPage(PAGE_2FA) } },
+                                text = { Text("2FA") },
+                            )
+                            Tab(
+                                selected = pagerState.currentPage == PAGE_WEBAUTHN,
+                                onClick = { scope.launch { pagerState.animateScrollToPage(PAGE_WEBAUTHN) } },
+                                text = { Text("密钥") },
+                            )
+                        }
+                        HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { page ->
+                            when (page) {
+                                PAGE_2FA -> TotpList(
+                                    entries = visibleTotp,
+                                    nowMillis = nowMillis,
+                                    onCopy = { code ->
+                                        copyToClipboard(context, code, sensitive = true)
+                                        scope.launch {
+                                            delay(30_000)
+                                            clearClipboard(context)
+                                        }
+                                    },
+                                    onDelete = { pendingDelete = it },
+                                )
+                                else -> WebAuthnLivePage(
+                                    configured = vault.device != null,
+                                    loading = webAuthnLoading,
+                                    error = webAuthnLoadError,
+                                    actionError = webAuthnActionError,
+                                    entries = liveWebAuthn,
+                                    skipped = webAuthnSkipped,
+                                    onRefresh = { scope.launch { loadWebAuthn() } },
+                                    onRevoke = { pendingRevoke = it },
+                                )
+                            }
+                        }
                     }
                 }
-            }
-        }
 
-        // 遮罩：展开时铺满全屏接管点击，点空白处收起；画在内容之上、按钮之下
-        if (fabExpanded && pagerState.currentPage == PAGE_2FA) {
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null,
-                    ) { fabExpanded = false },
-            )
-        }
+                // 遮罩：展开时铺满全屏接管点击，点空白处收起；画在内容之上、按钮之下
+                if (fabExpanded && pagerState.currentPage == PAGE_2FA) {
+                    Box(
+                        Modifier
+                            .fillMaxSize()
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                            ) { fabExpanded = false },
+                    )
+                }
 
-        // 悬浮按钮组：只在 2FA 页出现（密钥页只读/可吊销，不提供新增）
-        if (pagerState.currentPage == PAGE_2FA) {
-            Column(
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(end = 16.dp, bottom = 24.dp),
-                horizontalAlignment = Alignment.End,
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                if (expandProgress > 0.01f) {
+                // 悬浮按钮组：只在 2FA 页出现（密钥页只读/可吊销，不提供新增）
+                if (pagerState.currentPage == PAGE_2FA) {
                     Column(
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(end = 16.dp, bottom = 24.dp),
                         horizontalAlignment = Alignment.End,
                         verticalArrangement = Arrangement.spacedBy(12.dp),
-                        // 先叠在 FAB 上方再向上分开：只做位移（0 → 12dp），不做透明度/尺寸动画
-                        modifier = Modifier
-                            .offset(y = ((1f - expandProgress) * 12).dp),
                     ) {
-                        ActionButton(
-                            label = "扫描二维码",
-                            onClick = {
-                                fabExpanded = false
-                                showScan = true
-                            },
-                        )
-                        ActionButton(
-                            label = "手动输入",
-                            onClick = {
-                                fabExpanded = false
-                                showAdd = true
-                            },
-                        )
-                    }
-                    Spacer(Modifier.height(4.dp))
-                }
+                        if (expandProgress > 0.01f) {
+                            Column(
+                                horizontalAlignment = Alignment.End,
+                                verticalArrangement = Arrangement.spacedBy(12.dp),
+                                // 先叠在 FAB 上方再向上分开：只做位移（0 → 12dp），不做透明度/尺寸动画
+                                modifier = Modifier
+                                    .offset(y = ((1f - expandProgress) * 12).dp),
+                            ) {
+                                ActionButton(
+                                    label = "扫描二维码",
+                                    onClick = {
+                                        fabExpanded = false
+                                        topPage = VkeyPage.SCAN
+                                    },
+                                )
+                                ActionButton(
+                                    label = "手动输入",
+                                    onClick = {
+                                        fabExpanded = false
+                                        showAdd = true
+                                    },
+                                )
+                            }
+                            Spacer(Modifier.height(4.dp))
+                        }
 
-                val plusRotation by animateFloatAsState(
-                    targetValue = if (fabExpanded) 45f else 0f,
-                    animationSpec = tween(durationMillis = 180),
-                    label = "fab-plus-rotation",
-                )
-                FloatingActionButton(onClick = { fabExpanded = !fabExpanded }) {
-                    Text(
-                        text = "+",
-                        fontSize = 28.sp,
-                        modifier = Modifier.rotate(plusRotation),
-                    )
+                        val plusRotation by animateFloatAsState(
+                            targetValue = if (fabExpanded) 45f else 0f,
+                            animationSpec = tween(durationMillis = 180),
+                            label = "fab-plus-rotation",
+                        )
+                        FloatingActionButton(onClick = { fabExpanded = !fabExpanded }) {
+                            Text(
+                                text = "+",
+                                fontSize = 28.sp,
+                                modifier = Modifier.rotate(plusRotation),
+                            )
+                        }
+                    }
                 }
             }
+
+            VkeyPage.SYNC -> dev.xiaoqiong.vkey.ui.SyncScreen(
+                masterKey = vault.master_key,
+                device = vault.device,
+                serverUrl = serverUrl,
+                lastSyncAt = vault.lastSyncAt,
+                onSyncNow = doSync,
+                initialPairCode = syncPrefill.takeIf { it.isNotBlank() },
+                onSaved = { config, newMasterKey ->
+                    // 配对拿到的 master_key 才是账号密钥：以它为准（本地条目保留）
+                    onPersist(
+                        vault.copy(
+                            master_key = newMasterKey ?: vault.master_key,
+                            device = config,
+                        ),
+                    )
+                },
+                onServerUrlChange = onServerUrlChange,
+                autoLockOnResume = autoLockOnResume,
+                onAutoLockChange = onAutoLockChange,
+                onClearDevice = { onPersist(vault.copy(device = null)) },
+                onClose = { topPage = VkeyPage.HOME },
+            )
+
+            VkeyPage.SCAN -> dev.xiaoqiong.vkey.ui.ScanScreen(
+                onResult = { item ->
+                    onPersist(vault.copy(items = vault.items + item))
+                    topPage = VkeyPage.HOME
+                },
+                onCancel = { topPage = VkeyPage.HOME },
+            )
         }
-    }
-
-
-    if (showSync) {
-        dev.xiaoqiong.vkey.ui.SyncScreen(
-            masterKey = vault.master_key,
-            device = vault.device,
-            serverUrl = serverUrl,
-            lastSyncAt = vault.lastSyncAt,
-            onSyncNow = doSync,
-            initialPairCode = syncPrefill.takeIf { it.isNotBlank() },
-            onSaved = { config, newMasterKey ->
-                // 配对拿到的 master_key 才是账号密钥：以它为准（本地条目保留）
-                onPersist(
-                    vault.copy(
-                        master_key = newMasterKey ?: vault.master_key,
-                        device = config,
-                    ),
-                )
-            },
-            onServerUrlChange = onServerUrlChange,
-            autoLockOnResume = autoLockOnResume,
-            onAutoLockChange = onAutoLockChange,
-            onClearDevice = { onPersist(vault.copy(device = null)) },
-            onClose = { showSync = false },
-        )
-    }
-
-    if (showScan) {
-        dev.xiaoqiong.vkey.ui.ScanScreen(
-            onResult = { item ->
-                onPersist(vault.copy(items = vault.items + item))
-                showScan = false
-            },
-            onCancel = { showScan = false },
-        )
     }
 
     if (showAdd) {
@@ -702,23 +803,16 @@ private fun VaultScreen(
         )
     }
 
-    // 吊销 WebAuthn 凭据：二次确认后才打墓碑（唯一会推送的密钥操作）
+    // 吊销 WebAuthn 凭据：二次确认后直接向服务端推墓碑（手机不持有凭据，不落本地）
     pendingRevoke?.let { item ->
         AlertDialog(
             onDismissRequest = { pendingRevoke = null },
             title = { Text("吊销密钥凭据") },
-            text = { Text("吊销后所有设备（含电脑）将无法再用该站点凭据。") },
+            text = { Text("吊销后所有设备（含电脑）将无法再用该站点凭据。需要连接服务器。") },
             confirmButton = {
                 TextButton(onClick = {
-                    val now = System.currentTimeMillis() / 1000
-                    onPersist(
-                        vault.copy(
-                            webAuthn = vault.webAuthn.map { old ->
-                                if (old.id == item.id) old.copy(deleted = true, updatedAt = now) else old
-                            },
-                        ),
-                    )
                     pendingRevoke = null
+                    revokeWebAuthn(item)
                 }) { Text("吊销") }
             },
             dismissButton = { TextButton(onClick = { pendingRevoke = null }) { Text("取消") } },
@@ -734,6 +828,27 @@ private fun ActionButton(label: String, onClick: () -> Unit) {
         text = { Text(label) },
     )
 }
+
+/**
+ * 列表展示顺序：`updatedAt` 倒序（最新在最上面）。
+ *
+ * 时间字段缺失（`updatedAt == 0`，旧数据）时退化为 `version` 倒序；
+ * 仍相同则按 `id` 升序兜底，保证同一份数据每次渲染顺序一致（刷新时不抖动）。
+ *
+ * @param id 条目 id（最后一级 tie-break，升序）
+ * @param updatedAt 条目最后写入时间（unix 秒，0 表示缺失）
+ * @param version 服务端版本号（`updatedAt` 缺失时的备用排序键）
+ * @return 排序后的新列表（不修改入参）
+ */
+private fun <T> List<T>.sortedForDisplay(
+    id: (T) -> String,
+    updatedAt: (T) -> Long,
+    version: (T) -> Long,
+): List<T> = sortedWith(
+    compareByDescending<T> { updatedAt(it) }
+        .thenByDescending { version(it) }
+        .thenBy { id(it) },
+)
 
 /**
  * 2FA 页：TOTP 卡片列表（空态给出添加入口提示）。
@@ -754,12 +869,20 @@ private fun TotpList(
         EmptyState("还没有 2FA 条目", "点右下角「+」，可扫描二维码或手动输入 Base32 密钥")
         return
     }
+    // 展示顺序由 UI 决定（同步层保持服务端顺序）：按更新时间倒序
+    val ordered = remember(entries) {
+        entries.sortedForDisplay(
+            id = { it.id },
+            updatedAt = { it.updatedAt },
+            version = { it.version },
+        )
+    }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        items(entries, key = { it.id }) { item ->
+        items(ordered, key = { it.id }) { item ->
             TotpCard(
                 item = item,
                 nowMillis = nowMillis,
@@ -771,10 +894,100 @@ private fun TotpList(
 }
 
 /**
+ * 密钥页：**实时查询服务端**（不落本地），三态 + 手动「刷新」。
+ *
+ * 手机不持有凭据，因此这里不做本地同步：每次进入页面 / 点刷新都重新拉取，
+ * 展示 `rp_id`、账号与创建时间，并允许吊销（服务端墓碑）。
+ *
+ * @param configured 是否已配对（无 device 时提示先完成同步配置）
+ * @param loading 是否正在加载
+ * @param error 上次加载失败的原因（非 null 时展示错误态 + 重试）
+ * @param actionError 吊销失败原因（展示在列表上方，不覆盖已有列表）
+ * @param entries 实时查到的条目（已过滤墓碑）
+ * @param skipped 上次拉取被跳过的条数（解密/解析失败），用于诊断汇总
+ * @param onRefresh 重新拉取
+ * @param onRevoke 请求吊销（需二次确认）
+ */
+@Composable
+private fun WebAuthnLivePage(
+    configured: Boolean,
+    loading: Boolean,
+    error: String?,
+    actionError: String?,
+    entries: List<WebAuthnItem>,
+    skipped: Int,
+    onRefresh: () -> Unit,
+    onRevoke: (WebAuthnItem) -> Unit,
+) {
+    if (!configured) {
+        EmptyState(
+            "先完成同步配置",
+            "密钥只做实时管理：请在「设置」里完成配对或登录后再查看。",
+        )
+        return
+    }
+    Column(Modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(
+                text = if (loading) "正在加载…" else "拉取 ${entries.size} / 跳过 $skipped",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            TextButton(onClick = onRefresh, enabled = !loading) { Text("刷新") }
+        }
+        actionError?.let { message ->
+            Text(
+                text = message,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+        Box(Modifier.weight(1f)) {
+            when {
+                loading && entries.isEmpty() -> LinearProgressIndicator(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 48.dp).align(Alignment.Center),
+                )
+                error != null -> WebAuthnErrorState(error = error, onRetry = onRefresh)
+                entries.isEmpty() -> EmptyState(
+                    "没有密钥凭据",
+                    "桌面端注册的虚拟密钥会出现在这里；手机只读/可吊销（不能在这里新增）。",
+                )
+                else -> WebAuthnList(entries = entries, onRevoke = onRevoke)
+            }
+        }
+    }
+}
+
+/** 密钥页加载失败态：错误原因 + 重试。 */
+@Composable
+private fun WebAuthnErrorState(error: String, onRetry: () -> Unit) {
+    Column(
+        modifier = Modifier.fillMaxSize().padding(24.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text("加载失败", style = MaterialTheme.typography.titleMedium)
+        Spacer(Modifier.height(8.dp))
+        Text(
+            text = error,
+            style = MaterialTheme.typography.bodySmall,
+            textAlign = TextAlign.Center,
+        )
+        Spacer(Modifier.height(12.dp))
+        Button(onClick = onRetry) { Text("重试") }
+    }
+}
+
+/**
  * 密钥页：WebAuthn 凭据列表（只读 + 吊销；不提供新增）。
  *
- * @param entries 可见条目（已过滤墓碑）
- * @param onRevoke 请求吊销（需二次确认后才打墓碑）
+ * @param entries 实时查到的条目（已过滤墓碑）
+ * @param onRevoke 请求吊销（需二次确认）
  */
 @Composable
 private fun WebAuthnList(entries: List<WebAuthnItem>, onRevoke: (WebAuthnItem) -> Unit) {
@@ -785,12 +998,20 @@ private fun WebAuthnList(entries: List<WebAuthnItem>, onRevoke: (WebAuthnItem) -
         )
         return
     }
+    // 展示顺序由 UI 决定：按更新时间倒序（最新在最上面）
+    val ordered = remember(entries) {
+        entries.sortedForDisplay(
+            id = { it.id },
+            updatedAt = { it.updatedAt },
+            version = { it.version },
+        )
+    }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        items(entries, key = { it.id }) { item ->
+        items(ordered, key = { it.id }) { item ->
             WebAuthnCard(item = item, onRevoke = { onRevoke(item) })
         }
     }
@@ -827,7 +1048,8 @@ private fun WebAuthnCard(item: WebAuthnItem, onRevoke: () -> Unit) {
             Column(Modifier.weight(1f)) {
                 Text(item.rpId.ifBlank { "(未知站点)" }, style = MaterialTheme.typography.titleMedium)
                 Text(
-                    item.username.ifBlank { item.displayName }.ifBlank { "(未命名账号)" },
+                    item.username.ifBlank { item.displayName }.ifBlank { item.label }
+                        .ifBlank { "(未命名账号)" },
                     style = MaterialTheme.typography.bodySmall,
                 )
                 if (createdAt != null) {

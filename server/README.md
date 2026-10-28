@@ -41,10 +41,13 @@ go run ./cmd/vkeyd serve --db ../.tmp/scratch/vkey.db --listen 127.0.0.1:3150 \
 # 改策略
 go run ./cmd/vkeyd policy set --db ../.tmp/scratch/vkey.db --require-master-pw=true
 
-# 查看将被物理删除的墓碑（默认即 dry-run，不写库）
+# 清理墓碑（终端里不带开关 = 交互式勾选：空格选择、回车列出、y 删除）
 go run ./cmd/vkeyd purge --db ../.tmp/scratch/vkey.db
 
-# 真正执行物理删除（仅控制台/运维手动）
+# 只列清单，不写库
+go run ./cmd/vkeyd purge --db ../.tmp/scratch/vkey.db --dry-run
+
+# 不交互，直接删除全部墓碑（仅控制台/运维手动）
 go run ./cmd/vkeyd purge --db ../.tmp/scratch/vkey.db --yes
 ```
 
@@ -201,22 +204,41 @@ vkeyd 只监听 `127.0.0.1:3150`，TLS 由 nginx 终止（实测 nginx/1.18.0）
 - **客户端删除 = 逻辑删除（墓碑）**：客户端删除条目时只是写入
   `deleted_at != 0` 的新版本，服务端**永不**因客户端请求物理删除行。
   墓碑是同步协议的一部分（其它设备靠它得知删除），`GET /items` 会照常下发。
-- **物理删除只有一条通道**：`vkeyd purge --db <path> --yes`
+- **物理删除只有一条通道**：`vkeyd purge --db <path>`
   —— 在服务器控制台由运维手动执行。**没有、也不会提供任何 HTTP 删除接口**
   （例如 `DELETE /api/v1/items` 之类一律不实现）。
 - 命令行为：
 
   ```bash
-  vkeyd purge --db <path>            # 默认 = dry-run：列出墓碑并给总数，不写库
-  vkeyd purge --db <path> --dry-run  # 同上（显式写法）
-  vkeyd purge --db <path> --yes      # 真正删除：单事务，完成后打印删除条数
+  vkeyd purge --db <path>            # 终端里：交互勾选后删除；没有终端：只列清单
+  vkeyd purge --db <path> --dry-run  # 只列清单（显式写法），不写库
+  vkeyd purge --db <path> --yes      # 不交互，直接删除全部墓碑
   ```
+
+  - **交互式选择**（无 `--yes`/`--dry-run`，且 stdin 是终端）：
+    - 列表每行是 `id前缀 kind rp_id deleted_at version`，光标行以 `> ` 标示，
+      勾选标记 `[x]` / 未勾选 `[ ]`；
+    - 按键：`↑`/`↓`（或 `k`/`j`）移动、`空格` 勾选/取消、`a` 全选/全不选、
+      `回车` 结束选择；`Ctrl+C` 中断（不写库）。
+    - 结束选择后再次列出**已勾选**条目摘要，并提示 `删除以上 N 条？(y/N)`：
+      输入 `y`（大小写不敏感）才在单事务内删除并打印「已物理删除 N 条」；
+      其它输入打印「已取消，未做任何修改」；一条都没勾选则打印「未选择任何条目」。
+      取消与中断都以 0 退出。
+  - **非交互**（管道/重定向，或显式 `--dry-run`）：只列清单并提示
+    「当前没有终端，无法交互；确认后用 --yes」，不写库。
+  - **远端服务器必须 `ssh -t`**：`ssh host 'cmd'` 不分配终端，会退化为只列清单；
+    要交互就得申请 TTY：
+
+    ```bash
+    ssh -t ecs-user@host 'cd ~/work/vkey && sudo -n ./bin/vkeyd purge --db ./data/vkeyd.db'
+    ```
 
   - 只影响 `items` 表中 `deleted_at IS NOT NULL AND deleted_at != 0` 的行；
     无墓碑时打印「没有已逻辑删除的条目」并以 0 退出。
   - `--dry-run` 与 `--yes` 同时给出时以 `--dry-run` 为准（更安全），并在 stderr 提示。
   - 防御断言：删除在单事务内执行，只有「实际影响行数 == 事务内统计的墓碑数」
-    且「删除前后非墓碑行数完全一致」才提交，否则回滚并报错退出。
+    且「删除前后非墓碑行数完全一致」才提交，否则回滚并报错退出；
+    交互式按勾选删除时，额外要求「实际影响行数 == 勾选条数」（勾选项已不是墓碑即回滚）。
 - **范围**：本策略只覆盖 `items`。`item_conflicts` / `pairs` / `audit`
   等表的清理不在本次范围内（需要时另行设计，且同样只走控制台）。
 

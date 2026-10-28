@@ -19,7 +19,7 @@ import kotlinx.serialization.json.put
  * 满足协议「客户端必须保留未知字段」的要求。
  *
  * WebAuthn 条目本机只读（不新增/不修改），因此只需要从明文里取出展示字段：
- * `rp_id / username / display_name / created_at`。
+ * `rp_id / username / display_name / label / user_handle / created_at`。
  */
 object ItemJson {
 
@@ -33,6 +33,7 @@ object ItemJson {
     private const val KEY_RP_ID = "rp_id"
     private const val KEY_USERNAME = "username"
     private const val KEY_DISPLAY_NAME = "display_name"
+    private const val KEY_USER_HANDLE = "user_handle"
     private const val KEY_LABEL = "label"
     private const val KEY_ISSUER = "issuer"
     private const val KEY_SECRET = "secret"
@@ -154,6 +155,8 @@ object ItemJson {
             rpId = obj.string(KEY_RP_ID).orEmpty(),
             username = obj.string(KEY_USERNAME).orEmpty(),
             displayName = obj.string(KEY_DISPLAY_NAME).orEmpty(),
+            label = obj.string(KEY_LABEL).orEmpty(),
+            userHandle = obj.string(KEY_USER_HANDLE).orEmpty(),
             createdAt = obj.long(KEY_CREATED_AT) ?: 0L,
             version = version,
             updatedAt = updatedAt,

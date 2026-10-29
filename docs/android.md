@@ -959,12 +959,48 @@ sealed interface AppState {
 
 ### 7.4 主题与无障碍
 
-- Material 3；默认跟随系统深浅色；动态取色（Android 12+）可选，默认关闭（保证验证码对比度）；
+- Material 3；默认跟随系统深浅色；动态取色（Android 12+）默认启用，低版本回退品牌色（见 §7.5）；
 - 字号：验证码至少 `displayLarge`；支持系统字体缩放 200% 不截断（用 `autoSize`/可换行布局）；
 - 触控目标 ≥48dp；对比度 ≥4.5:1；
 - TalkBack：按钮有 `contentDescription`；倒计时用 `liveRegion = Polite` 且只在剩余 5s 时播报，避免每秒刷屏；
 - 不用颜色单独表达状态（同步状态同时用图标 + 文案）；
 - 动效：尊重「移除动画」设置。
+
+### 7.5 主题模式与语言（2026-10-28 实施）
+
+**偏好存储**：与同步地址、自动锁定同用一个 `SharedPreferences`（文件名 `vkey_settings`）。
+
+| 键 | 取值 | 默认 | 读取时机 |
+|---|---|---|---|
+| `theme_mode` | `system` / `light` / `dark` | `system` | `VkeyTheme` 每次重组（`LocalContext`） |
+| `language` | `system` / `zh` / `en` | `system` | `MainActivity.attachBaseContext`（冷启动 / 重建） |
+
+枚举与读写集中在 `vault/AppSettings.kt`（`ThemeMode` / `LanguageMode` + `fromStorage`），非法值一律回退 `system`。
+
+**主题切换机制**：`ui/theme/Theme.kt` 的 `VkeyTheme(mode, content)` 先把 mode 解析成 `darkTheme`
+（`SYSTEM` → `isSystemInDarkTheme()`），选完配色后用 `Surface(background)` 兜底整屏背景。
+设置页改 mode **只改 Compose 状态 + 落盘**、不重建 Activity，重组即生效；系统栏图标明暗由
+`WindowCompat.getInsetsController(...).isAppearanceLightStatusBars / isAppearanceLightNavigationBars` 同步。
+窗口级 `Theme.Vkey` 另备 `values-night` 变体，只用于「跟随系统」时冷启动首帧不闪白/闪黑。
+
+**语言切换机制**：不引入 appcompat（依赖清单里没有），改用 `attachBaseContext` 包装 configuration：
+`i18n/LocaleSupport.wrap(base, mode)` 对 `zh` / `en` 用 `createConfigurationContext`（`setLocales` +
+`setLayoutDirection`）并 `Locale.setDefault`；`system` 原样返回 base，并把进程默认 locale 复位成系统值
+（否则「切回跟随系统」后 `Locale.getDefault()` 仍停在上一次的覆盖值）。
+设置页切换语言 → 写偏好 → `recreate()`：新 Activity 在 `attachBaseContext` 读到新值，`getString` /
+`stringResource` 立即换语言；vault 由 `onCreate` 从磁盘重读，数据不丢（重建后会重新走一次解锁）。
+`android:configChanges` 不含 `locale`，因此「跟随系统」时系统切语言由系统自动重建。
+
+**文案资源**：`res/values/strings.xml` 为中文（默认），`res/values-en/strings.xml` 为英文，两份 key 一一对应
+（各 160 条），带参数的统一用 `%1$s` / `%1$d`。非 UI 层（`crypto` / `net` / `sync`）的 `require` 与异常
+消息只面向开发者，统一英文；用户可见错误集中在 `ui/SyncScreen.kt` 的 `describeFailure(context, t)`，
+按服务端 `code` 映射到字符串资源（含 `not_configured` / `stale_write`）。
+
+**动态取色回退策略**：`Build.VERSION.SDK_INT >= 31`（Android 12）→ `dynamicLight/DarkColorScheme(context)`；
+否则 → `ui/theme/Color.kt` 的自定义冷灰蓝品牌色（明暗两套，正文 ≥ 4.5:1、控件边框 ≥ 3:1）。
+二维码区域例外：固定纯白底 + 黑模块（扫码器依赖高对比度），不随主题变化；
+扫码页的相机覆盖层也不跟随主题（背景永远是相机预览），其颜色常量统一放在 `Color.kt`。
+
 
 ---
 

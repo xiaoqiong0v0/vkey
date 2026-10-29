@@ -126,7 +126,7 @@ object ItemsSync {
         // 兼容旧 vault：先把历史误并入 items 的 webauthn 条目搬到独立列表
         val source = vault.withLegacyWebAuthnMigrated()
         val config = source.device
-            ?: throw ApiException("not_configured", "本机尚未完成同步配置", 0)
+            ?: throw ApiException("not_configured", "sync is not configured on this device", 0)
         val masterKey = SyncManager.parseMasterKey(source.master_key)
         val api = SyncManager.authorizedApi(config)
 
@@ -253,12 +253,12 @@ object ItemsSync {
             deletedAt = now,
         )
         val result = api.pushItems(listOf(write)).results.firstOrNull()
-            ?: throw ApiException("invalid_response", "服务端未返回写入结果", 0)
+            ?: throw ApiException("invalid_response", "server returned no write result", 0)
         if (result.status != STATUS_APPLIED) {
             val code = result.reason ?: result.status
             val message = when (code) {
-                REASON_STALE_WRITE -> "该凭据已在其它设备变更，请刷新后重试"
-                else -> "服务端拒绝写入（$code）"
+                REASON_STALE_WRITE -> "credential changed on another device"
+                else -> "server rejected the write ($code)"
             }
             throw ApiException(code, message, 0)
         }

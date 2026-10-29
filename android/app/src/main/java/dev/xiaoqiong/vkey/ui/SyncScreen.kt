@@ -1,9 +1,11 @@
 package dev.xiaoqiong.vkey.ui
 
+import android.content.Context
 import android.os.Build
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -12,17 +14,23 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -38,17 +46,22 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.xiaoqiong.vkey.R
 import dev.xiaoqiong.vkey.net.ApiException
 import dev.xiaoqiong.vkey.sync.GeneratedPairCode
 import dev.xiaoqiong.vkey.sync.SyncManager
 import dev.xiaoqiong.vkey.sync.SyncStats
 import dev.xiaoqiong.vkey.vault.DeviceConfig
+import dev.xiaoqiong.vkey.vault.LanguageMode
+import dev.xiaoqiong.vkey.vault.ThemeMode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -79,6 +92,7 @@ private enum class ConfirmKind { NONE, CLEAR_DEVICE }
  * @param onSaved 配置成功回调：新设备材料 + 需要替换的 master_key（null 表示与本地一致）
  * @param onServerUrlChange 服务器地址变化（持久化到 AppSettings）
  * @param onClearDevice 断开配对（清除设备材料）
+ * @param onOpenAbout 打开「关于」页
  * @param onClose 关闭本页
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -95,6 +109,11 @@ fun SyncScreen(
     onClearDevice: () -> Unit,
     autoLockOnResume: Boolean,
     onAutoLockChange: (Boolean) -> Unit,
+    themeMode: ThemeMode,
+    onThemeModeChange: (ThemeMode) -> Unit,
+    language: LanguageMode,
+    onLanguageChange: (LanguageMode) -> Unit,
+    onOpenAbout: () -> Unit,
     onClose: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -125,7 +144,7 @@ fun SyncScreen(
                 try {
                     task()
                 } catch (t: Throwable) {
-                    error = describeFailure(t)
+                    error = describeFailure(context, t)
                 } finally {
                     busy = null
                 }
@@ -139,16 +158,17 @@ fun SyncScreen(
         val address = url.trim()
         when {
             busy != null -> Unit
-            address.isEmpty() -> error = "请先填写服务器地址"
-            !SyncManager.looksLikeKey(mk) -> error = "master_key 必须是 52 位 base32（可用空格/连字符分组）"
-            else -> runTask("正在用主密钥登录…") {
+            address.isEmpty() -> error = context.getString(R.string.err_enter_server_url)
+            !SyncManager.looksLikeKey(mk) ->
+                error = context.getString(R.string.err_master_key_format)
+            else -> runTask(context.getString(R.string.busy_logging_in)) {
                 val result = withContext(Dispatchers.IO) {
                     SyncManager.login(address, mk, deviceName, device?.seed)
                 }
                 onServerUrlChange(result.config.server_url)
                 onSaved(result.config, result.masterKeyBase32.takeIf { it != masterKey })
                 masterKeyInput = ""
-                info = "已登录：${result.config.device_name}"
+                info = context.getString(R.string.info_logged_in, result.config.device_name)
             }
         }
     }
@@ -159,16 +179,17 @@ fun SyncScreen(
         val address = url.trim()
         when {
             busy != null -> Unit
-            address.isEmpty() -> error = "请先填写服务器地址"
-            !SyncManager.looksLikeKey(code) -> error = "配对码必须是 52 位 base32（可用空格/连字符分组）"
-            else -> runTask("正在领取配对码…") {
+            address.isEmpty() -> error = context.getString(R.string.err_enter_server_url)
+            !SyncManager.looksLikeKey(code) ->
+                error = context.getString(R.string.err_pair_code_format)
+            else -> runTask(context.getString(R.string.busy_claiming_pair_code)) {
                 val result = withContext(Dispatchers.IO) {
                     SyncManager.pair(address, code, deviceName, device?.seed)
                 }
                 onServerUrlChange(result.config.server_url)
                 onSaved(result.config, result.masterKeyBase32.takeIf { it != masterKey })
                 pairCodeInput = ""
-                info = "配对成功：${result.config.device_name}"
+                info = context.getString(R.string.info_paired, result.config.device_name)
             }
         }
     }
@@ -177,10 +198,10 @@ fun SyncScreen(
     val doSync: () -> Unit = {
         when {
             busy != null || device == null -> Unit
-            else -> runTask("正在同步条目…") {
+            else -> runTask(context.getString(R.string.busy_syncing_items)) {
                 val stats = onSyncNow()
                 syncStats = stats
-                info = "同步完成"
+                info = context.getString(R.string.info_sync_done)
             }
         }
     }
@@ -190,7 +211,7 @@ fun SyncScreen(
         val cfg = device
         when {
             busy != null || cfg == null -> Unit
-            else -> runTask("正在生成配对码…") {
+            else -> runTask(context.getString(R.string.busy_generating_pair_code)) {
                 val pairCode = withContext(Dispatchers.IO) {
                     SyncManager.generatePairCode(cfg, masterKey)
                 }
@@ -232,12 +253,12 @@ fun SyncScreen(
                     url = server
                     onServerUrlChange(server)
                     showScan = false
-                    info = "服务器地址已设置：$server"
+                    info = context.getString(R.string.info_server_set, server)
                 },
                 onPairCode = { code ->
                     pairCodeInput = code
                     showScan = false
-                    info = "已识别配对码，点「领取并完成配置」继续"
+                    info = context.getString(R.string.info_pair_code_detected)
                 },
                 onCancel = { showScan = false },
             )
@@ -245,8 +266,12 @@ fun SyncScreen(
             Scaffold(
                 topBar = {
                     TopAppBar(
-                        title = { Text("同步配置") },
-                        navigationIcon = { TextButton(onClick = onClose) { Text("返回") } },
+                        title = { Text(stringResource(R.string.title_settings)) },
+                        navigationIcon = {
+                            TextButton(onClick = onClose) {
+                                Text(stringResource(R.string.action_back))
+                            }
+                        },
                     )
                 },
             ) { padding ->
@@ -258,6 +283,39 @@ fun SyncScreen(
                         .padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
+                    // ---------------- 外观：主题 + 语言（点击即生效，无需保存） ----------------
+                    Card(Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(16.dp)) {
+                            Text(
+                                stringResource(R.string.section_appearance),
+                                style = MaterialTheme.typography.titleMedium,
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            ThemeMode.entries.forEach { option ->
+                                ChoiceRow(
+                                    label = stringResource(option.labelRes()),
+                                    selected = themeMode == option,
+                                    onSelect = { onThemeModeChange(option) },
+                                )
+                            }
+                            Spacer(Modifier.height(12.dp))
+                            HorizontalDivider()
+                            Spacer(Modifier.height(12.dp))
+                            Text(
+                                stringResource(R.string.section_language),
+                                style = MaterialTheme.typography.titleMedium,
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            LanguageMode.entries.forEach { option ->
+                                ChoiceRow(
+                                    label = stringResource(option.labelRes()),
+                                    selected = language == option,
+                                    onSelect = { onLanguageChange(option) },
+                                )
+                            }
+                        }
+                    }
+
                     // ---------------- 安全 ----------------
                     Card(Modifier.fillMaxWidth()) {
                         Row(
@@ -267,9 +325,9 @@ fun SyncScreen(
                                 .padding(horizontal = 16.dp, vertical = 8.dp),
                         ) {
                             Column(Modifier.weight(1f)) {
-                                Text("回到前台时重新解锁", style = MaterialTheme.typography.bodyLarge)
+                                Text(stringResource(R.string.settings_auto_lock_title), style = MaterialTheme.typography.bodyLarge)
                                 Text(
-                                    "关闭时：从后台回来直接进入（系统已解锁过）",
+                                    stringResource(R.string.settings_auto_lock_desc),
                                     style = MaterialTheme.typography.bodySmall,
                                 )
                             }
@@ -284,20 +342,33 @@ fun SyncScreen(
                     Card(Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(16.dp)) {
                             Text(
-                                text = if (device == null) "未配置" else "已登录",
+                                text = if (device == null) {
+                                    stringResource(R.string.status_not_configured)
+                                } else {
+                                    stringResource(R.string.status_logged_in)
+                                },
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Medium,
                             )
                             if (device == null) {
                                 Text(
-                                    "输入 master_key 或配对码完成配置；也可以先扫服务端二维码自动填好地址。",
+                                    stringResource(R.string.sync_configure_hint),
                                     style = MaterialTheme.typography.bodySmall,
                                     modifier = Modifier.padding(top = 4.dp),
                                 )
                             } else {
-                                Text("设备：${device.device_name}", style = MaterialTheme.typography.bodySmall)
-                                Text("服务器：${device.server_url}", style = MaterialTheme.typography.bodySmall)
-                                Text("账号：${device.username}", style = MaterialTheme.typography.bodySmall)
+                                Text(
+                                    stringResource(R.string.label_device, device.device_name),
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                                Text(
+                                    stringResource(R.string.label_server, device.server_url),
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                                Text(
+                                    stringResource(R.string.label_account_line, device.username),
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
                             }
                         }
                     }
@@ -319,7 +390,7 @@ fun SyncScreen(
                             OutlinedTextField(
                                 value = url,
                                 onValueChange = { url = it },
-                                label = { Text("同步服务地址") },
+                                label = { Text(stringResource(R.string.label_sync_server_url)) },
                                 singleLine = true,
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
                                 modifier = Modifier.fillMaxWidth(),
@@ -332,19 +403,19 @@ fun SyncScreen(
                                 Button(
                                     onClick = {
                                         onServerUrlChange(url)
-                                        info = "服务器地址已保存"
+                                        info = context.getString(R.string.info_server_saved)
                                     },
                                     enabled = busy == null && url.trim().isNotEmpty(),
                                     modifier = Modifier.weight(1f),
-                                ) { Text("保存地址") }
+                                ) { Text(stringResource(R.string.action_save_address)) }
                                 Button(
                                     onClick = { showScan = true },
                                     enabled = busy == null,
                                     modifier = Modifier.weight(1f),
-                                ) { Text("扫码") }
+                                ) { Text(stringResource(R.string.action_scan)) }
                             }
                             Text(
-                                "扫码可识别服务端 /pair 或主页的二维码（内容只有服务器地址）",
+                                stringResource(R.string.sync_scan_hint),
                                 style = MaterialTheme.typography.bodySmall,
                                 modifier = Modifier.padding(top = 4.dp),
                             )
@@ -355,9 +426,9 @@ fun SyncScreen(
                         // ---------------- 已登录：条目同步 ----------------
                         Card(Modifier.fillMaxWidth()) {
                             Column(Modifier.padding(16.dp)) {
-                                Text("条目同步", style = MaterialTheme.typography.titleMedium)
+                                Text(stringResource(R.string.section_item_sync), style = MaterialTheme.typography.titleMedium)
                                 Text(
-                                    "把本机改动推送到服务端，并拉回其它设备的改动（端到端加密，服务端只见密文）。",
+                                    stringResource(R.string.item_sync_desc),
                                     style = MaterialTheme.typography.bodySmall,
                                     modifier = Modifier.padding(top = 4.dp),
                                 )
@@ -366,18 +437,27 @@ fun SyncScreen(
                                     onClick = doSync,
                                     enabled = busy == null,
                                     modifier = Modifier.fillMaxWidth(),
-                                ) { Text("立即同步") }
+                                ) { Text(stringResource(R.string.action_sync_now)) }
                                 val stats = syncStats
                                 if (stats != null) {
                                     Text(
-                                        "已推送 ${stats.pushed} / 已吊销 ${stats.revoked} / " +
-                                            "已拉取 ${stats.pulled} / 跳过 ${stats.skipped} / 冲突 ${stats.conflicts}",
+                                        stringResource(
+                                            R.string.sync_stats,
+                                            stats.pushed,
+                                            stats.revoked,
+                                            stats.pulled,
+                                            stats.skipped,
+                                            stats.conflicts,
+                                        ),
                                         style = MaterialTheme.typography.bodySmall,
                                         modifier = Modifier.padding(top = 8.dp),
                                     )
                                 }
                                 Text(
-                                    "最近同步：${formatSyncTime(lastSyncAt)}",
+                                    stringResource(
+                                        R.string.label_last_sync,
+                                        formatSyncTime(context, lastSyncAt),
+                                    ),
                                     style = MaterialTheme.typography.bodySmall,
                                     modifier = Modifier.padding(top = 4.dp),
                                 )
@@ -387,9 +467,9 @@ fun SyncScreen(
                         // ---------------- 已登录：生成配对码 ----------------
                         Card(Modifier.fillMaxWidth()) {
                             Column(Modifier.padding(16.dp)) {
-                                Text("给新设备配对", style = MaterialTheme.typography.titleMedium)
+                                Text(stringResource(R.string.section_pair_new_device), style = MaterialTheme.typography.titleMedium)
                                 Text(
-                                    "生成一次性配对码（10 分钟内有效、单次可用）。在新设备输入它，或扫描它的二维码内容即可接入同一账号。",
+                                    stringResource(R.string.pair_new_device_desc),
                                     style = MaterialTheme.typography.bodySmall,
                                     modifier = Modifier.padding(top = 4.dp),
                                 )
@@ -398,7 +478,15 @@ fun SyncScreen(
                                     onClick = doGenerate,
                                     enabled = busy == null,
                                     modifier = Modifier.fillMaxWidth(),
-                                ) { Text(if (generated == null) "生成配对码" else "重新生成") }
+                                ) {
+                                    Text(
+                                        if (generated == null) {
+                                            stringResource(R.string.action_generate_pair_code)
+                                        } else {
+                                            stringResource(R.string.action_regenerate)
+                                        },
+                                    )
+                                }
 
                                 val pairCode = generated
                                 if (pairCode != null) {
@@ -419,9 +507,12 @@ fun SyncScreen(
                                     )
                                     Text(
                                         text = if (remainingSeconds > 0) {
-                                            "剩余有效期 ${formatCountdown(remainingSeconds)}"
+                                            stringResource(
+                                                R.string.pair_code_remaining,
+                                                formatCountdown(remainingSeconds),
+                                            )
                                         } else {
-                                            "已过期，请重新生成"
+                                            stringResource(R.string.pair_code_expired)
                                         },
                                         style = MaterialTheme.typography.bodySmall,
                                         color = if (remainingSeconds > 0) {
@@ -436,11 +527,13 @@ fun SyncScreen(
                                         Button(
                                             onClick = {
                                                 copyToClipboard(context, pairCode.codeText, sensitive = false)
-                                                info = "配对码已复制"
+                                                info = context.getString(R.string.info_pair_code_copied)
                                             },
                                             enabled = remainingSeconds > 0,
-                                        ) { Text("复制配对码") }
-                                        TextButton(onClick = { showScan = true }) { Text("扫别人的码") }
+                                        ) { Text(stringResource(R.string.action_copy_pair_code)) }
+                                        TextButton(onClick = { showScan = true }) {
+                                            Text(stringResource(R.string.action_scan_other_code))
+                                        }
                                     }
                                 }
                             }
@@ -451,10 +544,10 @@ fun SyncScreen(
                         // ---------------- 切服务器 / 断开 ----------------
                         Card(Modifier.fillMaxWidth()) {
                             Column(Modifier.padding(16.dp)) {
-                                Text("设备管理", style = MaterialTheme.typography.titleMedium)
+                                Text(stringResource(R.string.section_device_management), style = MaterialTheme.typography.titleMedium)
                                 if (serverChanged) {
                                     Text(
-                                        "填写的地址与当前配对不一致：更换服务器后需要重新配对。",
+                                        stringResource(R.string.warn_server_changed),
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.error,
                                         modifier = Modifier.padding(top = 4.dp),
@@ -464,7 +557,7 @@ fun SyncScreen(
                                 OutlinedTextField(
                                     value = deviceName,
                                     onValueChange = { deviceName = it },
-                                    label = { Text("设备名（重新配对时使用）") },
+                                    label = { Text(stringResource(R.string.label_device_name_for_repair)) },
                                     singleLine = true,
                                     modifier = Modifier.fillMaxWidth(),
                                 )
@@ -472,16 +565,16 @@ fun SyncScreen(
                                 TextButton(
                                     onClick = { confirm = ConfirmKind.CLEAR_DEVICE },
                                     enabled = busy == null,
-                                ) { Text("断开配对（清除本机设备材料）") }
+                                ) { Text(stringResource(R.string.action_clear_pairing)) }
                             }
                         }
                     } else {
                         // ---------------- 未配置：两条配置路径 ----------------
                         Card(Modifier.fillMaxWidth()) {
                             Column(Modifier.padding(16.dp)) {
-                                Text("用 master_key 登录", style = MaterialTheme.typography.titleMedium)
+                                Text(stringResource(R.string.section_login_master_key), style = MaterialTheme.typography.titleMedium)
                                 Text(
-                                    "恢复码 / master_key（52 位）。本机会生成并保存自己的设备密钥。",
+                                    stringResource(R.string.login_master_key_desc),
                                     style = MaterialTheme.typography.bodySmall,
                                     modifier = Modifier.padding(top = 4.dp),
                                 )
@@ -500,15 +593,15 @@ fun SyncScreen(
                                     onClick = doLogin,
                                     enabled = busy == null,
                                     modifier = Modifier.fillMaxWidth(),
-                                ) { Text("用 master_key 完成配置") }
+                                ) { Text(stringResource(R.string.action_login_with_master_key)) }
                             }
                         }
 
                         Card(Modifier.fillMaxWidth()) {
                             Column(Modifier.padding(16.dp)) {
-                                Text("用配对码领取", style = MaterialTheme.typography.titleMedium)
+                                Text(stringResource(R.string.section_pair_with_code), style = MaterialTheme.typography.titleMedium)
                                 Text(
-                                    "在已登录的设备上「生成配对码」，把 52 位配对码输入这里。配对成功后本机主密钥以账号为准（本机已有条目保留）。",
+                                    stringResource(R.string.pair_with_code_desc),
                                     style = MaterialTheme.typography.bodySmall,
                                     modifier = Modifier.padding(top = 4.dp),
                                 )
@@ -516,7 +609,7 @@ fun SyncScreen(
                                 OutlinedTextField(
                                     value = pairCodeInput,
                                     onValueChange = { pairCodeInput = it },
-                                    label = { Text("配对码（可含 - 与空格）") },
+                                    label = { Text(stringResource(R.string.label_pair_code_input)) },
                                     singleLine = true,
                                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
                                     modifier = Modifier.fillMaxWidth(),
@@ -527,12 +620,12 @@ fun SyncScreen(
                                         onClick = doPair,
                                         enabled = busy == null,
                                         modifier = Modifier.weight(1f),
-                                    ) { Text("领取并完成配置") }
+                                    ) { Text(stringResource(R.string.action_claim_and_configure)) }
                                     Button(
                                         onClick = { showScan = true },
                                         enabled = busy == null,
                                         modifier = Modifier.weight(1f),
-                                    ) { Text("扫码输入") }
+                                    ) { Text(stringResource(R.string.action_scan_input)) }
                                 }
                             }
                         }
@@ -540,10 +633,32 @@ fun SyncScreen(
                         OutlinedTextField(
                             value = deviceName,
                             onValueChange = { deviceName = it },
-                            label = { Text("设备名") },
+                            label = { Text(stringResource(R.string.label_device_name)) },
                             singleLine = true,
                             modifier = Modifier.fillMaxWidth(),
                         )
+                    }
+
+                    // ---------------- 关于（页面最底部） ----------------
+                    Card(Modifier.fillMaxWidth()) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable(onClick = onOpenAbout)
+                                .padding(horizontal = 16.dp, vertical = 16.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                stringResource(R.string.about_title),
+                                style = MaterialTheme.typography.bodyLarge,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
                 }
             }
@@ -553,9 +668,9 @@ fun SyncScreen(
     if (confirm == ConfirmKind.CLEAR_DEVICE) {
         AlertDialog(
             onDismissRequest = { confirm = ConfirmKind.NONE },
-            title = { Text("断开配对？") },
+            title = { Text(stringResource(R.string.dialog_disconnect_title)) },
             text = {
-                Text("只清除本机的 token 与设备密钥，不影响服务端条目和其它设备。之后可重新配对。")
+                Text(stringResource(R.string.dialog_disconnect_text))
             },
             confirmButton = {
                 TextButton(onClick = {
@@ -563,14 +678,52 @@ fun SyncScreen(
                     generated = null
                     onClearDevice()
                     onServerUrlChange(url)
-                    info = "已断开配对"
-                }) { Text("断开") }
+                    info = context.getString(R.string.info_disconnected)
+                }) { Text(stringResource(R.string.action_disconnect)) }
             },
             dismissButton = {
-                TextButton(onClick = { confirm = ConfirmKind.NONE }) { Text("取消") }
+                TextButton(onClick = { confirm = ConfirmKind.NONE }) {
+                    Text(stringResource(R.string.action_cancel))
+                }
             },
         )
     }
+}
+
+/**
+ * 单选项一行（整行可点，RadioButton 只做视觉指示）。
+ *
+ * @param label 选项文案
+ * @param selected 是否选中
+ * @param onSelect 点击回调（立即保存并应用）
+ */
+@Composable
+private fun ChoiceRow(label: String, selected: Boolean, onSelect: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .selectable(selected = selected, role = Role.RadioButton, onClick = onSelect)
+            .padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        RadioButton(selected = selected, onClick = null)
+        Spacer(Modifier.width(8.dp))
+        Text(label, style = MaterialTheme.typography.bodyLarge)
+    }
+}
+
+/** 主题模式 → 文案资源。 */
+private fun ThemeMode.labelRes(): Int = when (this) {
+    ThemeMode.SYSTEM -> R.string.theme_system
+    ThemeMode.LIGHT -> R.string.theme_light
+    ThemeMode.DARK -> R.string.theme_dark
+}
+
+/** 界面语言 → 文案资源。 */
+private fun LanguageMode.labelRes(): Int = when (this) {
+    LanguageMode.SYSTEM -> R.string.language_system
+    LanguageMode.CHINESE -> R.string.language_chinese
+    LanguageMode.ENGLISH -> R.string.language_english
 }
 
 /** 默认设备名：`Android <型号>`（型号可能为空，退化为 `android`）。 */
@@ -594,8 +747,8 @@ private fun formatCountdown(seconds: Long): String {
  * @param unixSeconds 同步完成时间（unix 秒）
  * @return 形如 `2026-10-28 09:15:03`，或 `从未同步`
  */
-internal fun formatSyncTime(unixSeconds: Long): String {
-    if (unixSeconds <= 0L) return "从未同步"
+internal fun formatSyncTime(context: Context, unixSeconds: Long): String {
+    if (unixSeconds <= 0L) return context.getString(R.string.sync_never)
     val format = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
     return format.format(Date(unixSeconds * 1000L))
 }
@@ -609,21 +762,22 @@ internal fun formatSyncTime(unixSeconds: Long): String {
  * @param t 捕获到的异常
  * @return 中文说明（保留服务端错误码便于排查）
  */
-internal fun describeFailure(t: Throwable): String {
+internal fun describeFailure(context: Context, t: Throwable): String {
     if (t is ApiException) {
-        val hint = when (t.code) {
-            "network_error" -> "网络不通：${t.message}"
-            "code_not_found" -> "配对码不存在（或服务器不对）"
-            "code_used" -> "配对码已被使用，请重新生成"
-            "code_expired" -> "配对码已过期，请重新生成"
-            "invalid_code" -> "配对码格式不对"
-            "invalid_token" -> "设备 token 无效，请重新配对"
-            "ts_skew" -> "设备与服务端时间相差过大，请校准时间"
-            "empty_body", "invalid_response" -> "服务端响应异常（可能不是 vkey 服务）"
+        return when (t.code) {
+            "network_error" -> context.getString(R.string.err_network, t.message.orEmpty())
+            "code_not_found" -> context.getString(R.string.err_code_not_found)
+            "code_used" -> context.getString(R.string.err_code_used)
+            "code_expired" -> context.getString(R.string.err_code_expired)
+            "invalid_code" -> context.getString(R.string.err_invalid_code)
+            "invalid_token" -> context.getString(R.string.err_invalid_token)
+            "ts_skew" -> context.getString(R.string.err_ts_skew)
+            "empty_body", "invalid_response" -> context.getString(R.string.err_bad_response)
+            "not_configured" -> context.getString(R.string.err_not_configured)
+            "stale_write" -> context.getString(R.string.err_stale_write)
             else -> t.message ?: t.code
         }
-        return hint
     }
-    if (t is IllegalArgumentException) return t.message ?: "输入不合法"
+    if (t is IllegalArgumentException) return t.message ?: context.getString(R.string.err_invalid_input)
     return t.message ?: t.javaClass.simpleName
 }

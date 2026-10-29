@@ -1,6 +1,7 @@
 package dev.xiaoqiong.vkey.ui
 
 import android.Manifest
+import android.content.Context
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -41,11 +42,11 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathFillType
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -54,8 +55,16 @@ import com.google.mlkit.vision.barcode.BarcodeScannerOptions
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
+import dev.xiaoqiong.vkey.R
 import dev.xiaoqiong.vkey.sync.Links
 import dev.xiaoqiong.vkey.sync.ScanLink
+import dev.xiaoqiong.vkey.ui.theme.CameraBackground
+import dev.xiaoqiong.vkey.ui.theme.CameraOverlayButton
+import dev.xiaoqiong.vkey.ui.theme.CameraOverlayButtonSubtle
+import dev.xiaoqiong.vkey.ui.theme.CameraOverlayContent
+import dev.xiaoqiong.vkey.ui.theme.CameraOverlayContentMuted
+import dev.xiaoqiong.vkey.ui.theme.CameraOverlayError
+import dev.xiaoqiong.vkey.ui.theme.CameraScrim
 import dev.xiaoqiong.vkey.vault.Otpauth
 import dev.xiaoqiong.vkey.vault.TotpItem
 import java.util.concurrent.Executors
@@ -108,7 +117,7 @@ fun ScanScreen(
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
         hasPermission = granted
-        if (!granted) error = "需要相机权限才能扫码；也可以返回用手动输入"
+        if (!granted) error = context.getString(R.string.scan_err_permission)
     }
 
     LaunchedEffect(Unit) {
@@ -129,14 +138,14 @@ fun ScanScreen(
                 ).process(image).addOnSuccessListener { barcodes ->
                     val raw = barcodes.firstOrNull()?.rawValue
                     if (raw == null) {
-                        error = "这张图里没有识别到二维码"
+                        error = context.getString(R.string.scan_err_no_qr_in_image)
                     } else {
-                        dispatchRaw(raw, onResult, onConfigLink, onPairCode) { error = it }
+                        dispatchRaw(context, raw, onResult, onConfigLink, onPairCode) { error = it }
                     }
                 }.addOnFailureListener { e ->
-                    error = "图片识别失败：${e.message}"
+                    error = context.getString(R.string.scan_err_image_decode, e.message.orEmpty())
                 }
-            }.onFailure { error = "读取图片失败：${it.message}" }
+            }.onFailure { error = context.getString(R.string.scan_err_image_read, it.message.orEmpty()) }
         }
     }
 
@@ -148,7 +157,7 @@ fun ScanScreen(
         }
     }
 
-    Box(Modifier.fillMaxSize().background(Color.Black)) {
+    Box(Modifier.fillMaxSize().background(CameraBackground)) {
         if (!hasPermission) {
             Column(
                 modifier = Modifier.fillMaxSize().padding(24.dp),
@@ -156,8 +165,8 @@ fun ScanScreen(
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Text(
-                    error ?: "等待相机权限…",
-                    color = Color.White,
+                    error ?: stringResource(R.string.scan_waiting_permission),
+                    color = CameraOverlayContent,
                     style = MaterialTheme.typography.bodyMedium,
                     textAlign = TextAlign.Center,
                 )
@@ -165,10 +174,10 @@ fun ScanScreen(
                     onClick = onCancel,
                     modifier = Modifier.padding(top = 16.dp),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = Color.White.copy(alpha = 0.18f),
-                        contentColor = Color.White,
+                        containerColor = CameraOverlayButton,
+                        contentColor = CameraOverlayContent,
                     ),
-                ) { Text("返回") }
+                ) { Text(stringResource(R.string.action_back)) }
             }
             return@Box
         }
@@ -210,7 +219,9 @@ fun ScanScreen(
                             processProxy(proxy, scanner) { raw ->
                                 android.util.Log.i("vkey-scan", "barcode raw=${raw.take(32)}")
                                 if (!handled) {
-                                    val consumed = dispatchRaw(raw, onResult, onConfigLink, onPairCode) { error = it }
+                                    val consumed = dispatchRaw(context, raw, onResult, onConfigLink, onPairCode) {
+                                    error = it
+                                }
                                     if (consumed) handled = true
                                 }
                             }
@@ -230,7 +241,7 @@ fun ScanScreen(
                         android.util.Log.i("vkey-scan", "camera bound: preview+analysis")
                     } catch (t: Throwable) {
                         android.util.Log.e("vkey-scan", "camera bind failed: ${t.message}", t)
-                        error = "相机启动失败：${t.message}"
+                        error = context.getString(R.string.scan_err_camera_start, t.message.orEmpty())
                     }
                 }, ContextCompat.getMainExecutor(ctx))
                 previewView
@@ -253,7 +264,7 @@ fun ScanScreen(
                 addRect(Rect(0f, 0f, size.width, size.height))
                 addRoundRect(hole)
             }
-            drawPath(path, Color.Black.copy(alpha = 0.55f))
+            drawPath(path, CameraScrim)
         }
 
         // 取景框：圆角白边 + 四角高亮
@@ -261,7 +272,7 @@ fun ScanScreen(
             modifier = Modifier
                 .align(Alignment.Center)
                 .size(frameSize)
-                .border(2.dp, Color.White.copy(alpha = 0.85f), RoundedCornerShape(20.dp)),
+                .border(2.dp, CameraOverlayContentMuted, RoundedCornerShape(20.dp)),
         )
 
         Column(
@@ -271,8 +282,12 @@ fun ScanScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Text(
-                text = if (onResult != null) "扫描 Authenticator 二维码" else "扫描同步配置 / 配对二维码",
-                color = Color.White,
+                text = if (onResult != null) {
+                    stringResource(R.string.scan_title_totp)
+                } else {
+                    stringResource(R.string.scan_title_config)
+                },
+                color = CameraOverlayContent,
                 style = MaterialTheme.typography.titleMedium,
             )
 
@@ -287,11 +302,11 @@ fun ScanScreen(
         ) {
             Text(
                 text = error ?: if (onResult != null) {
-                    "把二维码放进框内，识别后会自动添加"
+                    stringResource(R.string.scan_hint_totp)
                 } else {
-                    "把二维码放进框内，识别后自动填入"
+                    stringResource(R.string.scan_hint_config)
                 },
-                color = if (error != null) Color(0xFFFF8A80) else Color.White.copy(alpha = 0.85f),
+                color = if (error != null) CameraOverlayError else CameraOverlayContentMuted,
                 style = MaterialTheme.typography.bodyMedium,
                 textAlign = TextAlign.Center,
             )
@@ -299,10 +314,10 @@ fun ScanScreen(
                 onClick = { pickImage.launch(androidx.activity.result.PickVisualMediaRequest(androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia.ImageOnly)) },
                 modifier = Modifier.padding(top = 16.dp).fillMaxWidth(),
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = Color.White.copy(alpha = 0.18f),
-                    contentColor = Color.White,
+                    containerColor = CameraOverlayButton,
+                    contentColor = CameraOverlayContent,
                 ),
-            ) { Text("从相册选择二维码") }
+            ) { Text(stringResource(R.string.scan_pick_from_album)) }
             Row(
                 modifier = Modifier.padding(top = 8.dp).fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -311,18 +326,18 @@ fun ScanScreen(
                     onClick = { showPaste = true },
                     modifier = Modifier.weight(1f),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = Color.White.copy(alpha = 0.12f),
-                        contentColor = Color.White,
+                        containerColor = CameraOverlayButtonSubtle,
+                        contentColor = CameraOverlayContent,
                     ),
-                ) { Text("粘贴链接") }
+                ) { Text(stringResource(R.string.scan_paste_link)) }
                 Button(
                     onClick = onCancel,
                     modifier = Modifier.weight(1f),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = Color.White.copy(alpha = 0.12f),
-                        contentColor = Color.White,
+                        containerColor = CameraOverlayButtonSubtle,
+                        contentColor = CameraOverlayContent,
                     ),
-                ) { Text("取消") }
+                ) { Text(stringResource(R.string.action_cancel)) }
             }
         }
 
@@ -333,16 +348,24 @@ fun ScanScreen(
         var text by remember { mutableStateOf("") }
         androidx.compose.material3.AlertDialog(
             onDismissRequest = { showPaste = false },
-            title = { Text(if (onResult != null) "粘贴 otpauth 链接" else "粘贴链接或配对码") },
+            title = {
+                Text(
+                    if (onResult != null) {
+                        stringResource(R.string.scan_dialog_paste_otpauth_title)
+                    } else {
+                        stringResource(R.string.scan_dialog_paste_config_title)
+                    },
+                )
+            },
             text = {
                 androidx.compose.foundation.layout.Column {
                     Text(
                         text = if (onResult != null) {
-                            "形如 otpauth://totp/Issuer:acct?secret=XXXX"
+                            stringResource(R.string.scan_paste_otpauth_hint)
                         } else {
-                            "形如 vkey://config?server=https://… 或 vkey://pair?code=…，也可直接粘贴 52 位配对码"
+                            stringResource(R.string.scan_paste_config_hint)
                         },
-                        color = Color.Gray,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         style = MaterialTheme.typography.bodySmall,
                     )
                     androidx.compose.material3.OutlinedTextField(
@@ -356,11 +379,13 @@ fun ScanScreen(
             confirmButton = {
                 androidx.compose.material3.TextButton(onClick = {
                     showPaste = false
-                    dispatchRaw(text, onResult, onConfigLink, onPairCode) { error = it }
-                }) { Text("识别") }
+                    dispatchRaw(context, text, onResult, onConfigLink, onPairCode) { error = it }
+                }) { Text(stringResource(R.string.action_recognize)) }
             },
             dismissButton = {
-                androidx.compose.material3.TextButton(onClick = { showPaste = false }) { Text("取消") }
+                androidx.compose.material3.TextButton(onClick = { showPaste = false }) {
+                    Text(stringResource(R.string.action_cancel))
+                }
             },
         )
     }
@@ -380,6 +405,7 @@ fun ScanScreen(
  * @return true 表示已被某个流程消费
  */
 private fun dispatchRaw(
+    context: Context,
     raw: String,
     onResult: ((TotpItem) -> Unit)?,
     onConfigLink: ((String) -> Unit)?,
@@ -388,7 +414,7 @@ private fun dispatchRaw(
 ): Boolean {
     val text = raw.trim()
     if (text.isEmpty()) {
-        onError("内容为空")
+        onError(context.getString(R.string.scan_err_empty))
         return false
     }
     // 裸配对码只在「同步配置」场景启用，避免把 52 位 TOTP 密钥误判成配对码
@@ -402,7 +428,7 @@ private fun dispatchRaw(
         is ScanLink.ServerConfig -> {
             val callback = onConfigLink
             if (callback == null) {
-                onError("这是同步配置二维码，请在「设置 → 同步配置」里扫描")
+                onError(context.getString(R.string.scan_err_config_qr_wrong_page))
                 return false
             }
             callback(link.serverUrl)
@@ -411,7 +437,7 @@ private fun dispatchRaw(
         is ScanLink.PairCode -> {
             val callback = onPairCode
             if (callback == null) {
-                onError("这是设备配对码，请在「设置 → 同步配置」里使用")
+                onError(context.getString(R.string.scan_err_pair_code_wrong_page))
                 return false
             }
             callback(link.code)
@@ -425,7 +451,13 @@ private fun dispatchRaw(
         callback(entry.item)
         return true
     }
-    onError(if (callback != null) "二维码不是有效的 otpauth:// 链接" else "不是同步配置 / 配对二维码")
+    onError(
+        if (callback != null) {
+            context.getString(R.string.scan_err_not_otpauth)
+        } else {
+            context.getString(R.string.scan_err_not_config_qr)
+        },
+    )
     return false
 }
 

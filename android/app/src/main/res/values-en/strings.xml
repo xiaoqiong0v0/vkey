@@ -1,0 +1,209 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  English resources. Keys must match res/values/strings.xml one-to-one.
+  Buttons use short verb phrases (Delete / Copy code / Save).
+-->
+<resources>
+    <string name="app_name">vkey</string>
+
+    <!-- ============ Lock / biometrics ============ -->
+    <string name="lock_verifying">Verifying…</string>
+    <string name="lock_need_device_credential">Set a screen lock or enroll biometrics in system settings first</string>
+    <string name="lock_failed">Verification failed: %1$s</string>
+    <string name="lock_not_recognized">Not recognized. Try again</string>
+    <string name="lock_title">vkey is locked</string>
+    <string name="lock_tap_retry">Tap to retry</string>
+    <string name="lock_unavailable">Cannot start system verification: %1$s</string>
+    <string name="biometric_title">Unlock vkey</string>
+    <string name="biometric_subtitle">Use fingerprint, face, or screen lock</string>
+
+    <!-- ============ Onboarding ============ -->
+    <string name="setup_title">Create your vkey vault</string>
+    <string name="setup_recovery_hint">This is your recovery code (52 characters). It is equivalent to your master key: without it, no device can decrypt your data.</string>
+    <string name="setup_copy_recovery">Copy recovery code</string>
+    <string name="toast_recovery_copied">Recovery code copied</string>
+    <string name="setup_saved_check">I have saved the recovery code somewhere safe</string>
+    <string name="action_continue">Continue</string>
+
+    <!-- ============ Deep links ============ -->
+    <string name="toast_server_set">Server address set: %1$s</string>
+    <string name="toast_pair_code_detected">Pairing code detected. Claim it under Sync settings</string>
+
+    <!-- ============ Home ============ -->
+    <string name="home_title">vkey · 2FA %1$d · Keys %2$d</string>
+    <string name="action_settings">Settings</string>
+    <string name="action_lock">Lock</string>
+    <string name="tab_webauthn">Keys</string>
+    <string name="toast_code_copied">Code copied. It will be cleared in 30 seconds</string>
+    <string name="toast_press_back_again">Press back again to exit</string>
+    <string name="fab_scan_qr">Scan QR code</string>
+    <string name="fab_manual_input">Enter manually</string>
+
+    <!-- ============ 2FA list ============ -->
+    <string name="empty_totp_title">No 2FA entries yet</string>
+    <string name="empty_totp_desc">Tap + at the bottom right to scan a QR code or enter a Base32 secret</string>
+    <string name="unnamed_issuer">(Unnamed)</string>
+    <string name="totp_copy_countdown">Copy (%1$d s)</string>
+
+    <!-- ============ Delete / revoke ============ -->
+    <string name="dialog_delete_totp_title">Delete 2FA entry</string>
+    <string name="dialog_delete_totp_text">This cannot be undone (the server copy is deleted too).</string>
+    <string name="action_delete">Delete</string>
+    <string name="action_cancel">Cancel</string>
+    <string name="dialog_revoke_title">Revoke key credential</string>
+    <string name="dialog_revoke_text">After revoking, no device (including computers) can use this site credential. A server connection is required.</string>
+    <string name="action_revoke">Revoke</string>
+
+    <!-- ============ WebAuthn (keys) page ============ -->
+    <string name="err_sync_not_configured">Finish sync setup first</string>
+    <string name="empty_webauthn_unconfigured_title">Finish sync setup first</string>
+    <string name="empty_webauthn_unconfigured_desc">Keys are managed live only: pair or sign in under Settings to view them.</string>
+    <string name="webauthn_loading">Loading…</string>
+    <string name="webauthn_counts">Fetched %1$d / skipped %2$d</string>
+    <string name="action_refresh">Refresh</string>
+    <string name="empty_webauthn_title">No key credentials</string>
+    <string name="empty_webauthn_desc">Virtual keys registered on desktop appear here; this phone is read-only and can revoke (no adding here).</string>
+    <string name="empty_webauthn_list_desc">These are desktop virtual key credentials; this phone is read-only and can revoke (no adding here).</string>
+    <string name="webauthn_load_failed">Load failed</string>
+    <string name="action_retry">Retry</string>
+    <string name="unknown_site">(Unknown site)</string>
+    <string name="unnamed_account">(Unnamed account)</string>
+    <string name="webauthn_created_at">Created %1$s</string>
+
+    <!-- ============ Add TOTP ============ -->
+    <string name="dialog_add_totp_title">Add TOTP</string>
+    <string name="label_issuer">Issuer (e.g. GitHub)</string>
+    <string name="label_account">Account</string>
+    <string name="label_base32_secret">Base32 secret</string>
+    <string name="err_secret_not_base32">Not a valid Base32 secret</string>
+    <string name="err_secret_too_short">Decoded value is too short (%1$d bytes); it may be incomplete</string>
+    <string name="action_save">Save</string>
+
+    <!-- ============ Settings: appearance / language ============ -->
+    <string name="section_appearance">Appearance</string>
+    <string name="theme_system">Follow system</string>
+    <string name="theme_light">Light</string>
+    <string name="theme_dark">Dark</string>
+    <string name="section_language">Language</string>
+    <string name="language_system">Follow system</string>
+    <string name="language_chinese">Chinese</string>
+    <string name="language_english">English</string>
+
+    <!-- ============ Common actions ============ -->
+    <string name="action_back">Back</string>
+    <string name="action_scan">Scan</string>
+    <string name="action_recognize">Import</string>
+
+    <!-- ============ Settings page ============ -->
+    <string name="title_settings">Settings</string>
+    <string name="settings_auto_lock_title">Require unlock when returning to foreground</string>
+    <string name="settings_auto_lock_desc">When off: returning from background goes straight in (system already unlocked)</string>
+
+    <!-- ============ Sync settings ============ -->
+    <string name="status_not_configured">Not configured</string>
+    <string name="status_logged_in">Signed in</string>
+    <string name="sync_configure_hint">Enter a master_key or pairing code to finish setup, or scan the server QR code to prefill the address.</string>
+    <string name="label_device">Device: %1$s</string>
+    <string name="label_server">Server: %1$s</string>
+    <string name="label_account_line">Account: %1$s</string>
+    <string name="label_sync_server_url">Sync server URL</string>
+    <string name="info_server_saved">Server address saved</string>
+    <string name="action_save_address">Save address</string>
+    <string name="sync_scan_hint">The scanner recognizes the server /pair page or home page QR code (it only contains the server address)</string>
+    <string name="section_item_sync">Item sync</string>
+    <string name="item_sync_desc">Push local changes to the server and pull changes from other devices (end-to-end encrypted; the server only sees ciphertext).</string>
+    <string name="action_sync_now">Sync now</string>
+    <string name="sync_stats">Pushed %1$d / revoked %2$d / pulled %3$d / skipped %4$d / conflicts %5$d</string>
+    <string name="label_last_sync">Last sync: %1$s</string>
+    <string name="sync_never">Never synced</string>
+    <string name="section_pair_new_device">Pair a new device</string>
+    <string name="pair_new_device_desc">Generate a one-time pairing code (valid for 10 minutes, single use). Enter it on the new device, or scan its QR code, to join the same account.</string>
+    <string name="action_generate_pair_code">Generate code</string>
+    <string name="action_regenerate">Regenerate</string>
+    <string name="pair_code_remaining">Expires in %1$s</string>
+    <string name="pair_code_expired">Expired. Generate a new one</string>
+    <string name="info_pair_code_copied">Pairing code copied</string>
+    <string name="action_copy_pair_code">Copy code</string>
+    <string name="action_scan_other_code">Scan a code</string>
+    <string name="section_device_management">Device management</string>
+    <string name="warn_server_changed">The address differs from the current pairing: switching servers requires pairing again.</string>
+    <string name="label_device_name_for_repair">Device name (used when pairing again)</string>
+    <string name="action_clear_pairing">Disconnect (clear local device material)</string>
+    <string name="section_login_master_key">Sign in with master_key</string>
+    <string name="login_master_key_desc">Recovery code / master_key (52 characters). This device generates and stores its own device key.</string>
+    <string name="action_login_with_master_key">Finish setup with master_key</string>
+    <string name="section_pair_with_code">Claim with a pairing code</string>
+    <string name="pair_with_code_desc">On a signed-in device, generate a pairing code and enter the 52-character code here. After pairing, this device adopts the account master key (existing local entries are kept).</string>
+    <string name="label_pair_code_input">Pairing code (spaces and dashes allowed)</string>
+    <string name="action_claim_and_configure">Claim and finish setup</string>
+    <string name="action_scan_input">Scan input</string>
+    <string name="label_device_name">Device name</string>
+    <string name="dialog_disconnect_title">Disconnect pairing?</string>
+    <string name="dialog_disconnect_text">Only the local token and device key are removed; server entries and other devices are unaffected. You can pair again later.</string>
+    <string name="info_disconnected">Pairing disconnected</string>
+    <string name="action_disconnect">Disconnect</string>
+    <string name="busy_logging_in">Signing in with master key…</string>
+    <string name="info_logged_in">Signed in: %1$s</string>
+    <string name="busy_claiming_pair_code">Claiming pairing code…</string>
+    <string name="info_paired">Paired: %1$s</string>
+    <string name="busy_syncing_items">Syncing items…</string>
+    <string name="info_sync_done">Sync complete</string>
+    <string name="busy_generating_pair_code">Generating pairing code…</string>
+    <string name="info_server_set">Server address set: %1$s</string>
+    <string name="info_pair_code_detected">Pairing code detected. Tap Claim and finish setup to continue</string>
+
+    <!-- ============ Error text (describeFailure) ============ -->
+    <string name="err_enter_server_url">Enter the server address first</string>
+    <string name="err_master_key_format">master_key must be 52 base32 characters (spaces or dashes allowed)</string>
+    <string name="err_pair_code_format">Pairing code must be 52 base32 characters (spaces or dashes allowed)</string>
+    <string name="err_network">Network unreachable: %1$s</string>
+    <string name="err_code_not_found">Pairing code not found (or wrong server)</string>
+    <string name="err_code_used">Pairing code already used. Generate a new one</string>
+    <string name="err_code_expired">Pairing code expired. Generate a new one</string>
+    <string name="err_invalid_code">Malformed pairing code</string>
+    <string name="err_invalid_token">Device token invalid. Pair again</string>
+    <string name="err_ts_skew">Device and server clocks differ too much. Adjust the time</string>
+    <string name="err_bad_response">Unexpected server response (not a vkey server?)</string>
+    <string name="err_invalid_input">Invalid input</string>
+    <string name="err_not_configured">Sync is not configured on this device</string>
+    <string name="err_stale_write">This credential changed on another device. Refresh and retry</string>
+    <string name="err_server_rejected">Server rejected the write (%1$s)</string>
+
+    <!-- ============ Scanner ============ -->
+    <string name="scan_waiting_permission">Waiting for camera permission…</string>
+    <string name="scan_err_permission">Camera permission is required to scan; you can go back and enter it manually</string>
+    <string name="scan_err_no_qr_in_image">No QR code found in this image</string>
+    <string name="scan_err_image_decode">Image scan failed: %1$s</string>
+    <string name="scan_err_image_read">Could not read image: %1$s</string>
+    <string name="scan_err_camera_start">Camera failed to start: %1$s</string>
+    <string name="scan_title_totp">Scan an Authenticator QR code</string>
+    <string name="scan_title_config">Scan a sync or pairing QR code</string>
+    <string name="scan_hint_totp">Place the QR code inside the frame; it is added automatically</string>
+    <string name="scan_hint_config">Place the QR code inside the frame; it is filled in automatically</string>
+    <string name="scan_pick_from_album">Pick QR code from gallery</string>
+    <string name="scan_paste_link">Paste link</string>
+    <string name="scan_dialog_paste_otpauth_title">Paste otpauth link</string>
+    <string name="scan_dialog_paste_config_title">Paste link or pairing code</string>
+    <string name="scan_paste_otpauth_hint">For example otpauth://totp/Issuer:acct?secret=XXXX</string>
+    <string name="scan_paste_config_hint">For example vkey://config?server=https://… or vkey://pair?code=…, or paste a 52-character pairing code</string>
+    <string name="scan_err_empty">Content is empty</string>
+    <string name="scan_err_config_qr_wrong_page">This is a sync QR code; scan it under Settings → Sync</string>
+    <string name="scan_err_pair_code_wrong_page">This is a device pairing code; use it under Settings → Sync</string>
+    <string name="scan_err_not_otpauth">QR code is not a valid otpauth:// link</string>
+    <string name="scan_err_not_config_qr">Not a sync or pairing QR code</string>
+
+    <!-- ============ QR code (accessibility) ============ -->
+    <string name="qr_code_content_description">QR code</string>
+
+    <!-- ============ About page ============ -->
+    <string name="about_title">About</string>
+    <string name="about_version">%1$s (%2$d)</string>
+    <string name="about_label_package">Package</string>
+    <string name="about_label_server">Server</string>
+    <string name="about_label_license">License</string>
+    <string name="about_server_unset">Not configured</string>
+    <string name="about_license_missing">Not declared</string>
+    <string name="about_link_homepage">Homepage</string>
+    <string name="about_link_repo">Source code</string>
+    <string name="about_footer">Codes and keys are encrypted on this device only. The server is zero-knowledge</string>
+</resources>

@@ -49,3 +49,8 @@ captures/
 *.swp
 .DS_Store
 Thumbs.db
+
+# Android 正式签名（不入库）
+android/keystore.properties
+*.jks
+*.keystore

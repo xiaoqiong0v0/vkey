@@ -78,7 +78,7 @@ object Crypto {
      * @return 长度为 [length] 的派生密钥
      */
     fun hkdfSha256(ikm: ByteArray, salt: ByteArray, info: ByteArray, length: Int): ByteArray {
-        require(length in 1..(255 * SHA256_LEN)) { "HKDF 输出长度非法: $length" }
+        require(length in 1..(255 * SHA256_LEN)) { "illegal HKDF output length: $length" }
         val effectiveSalt = if (salt.isEmpty()) ByteArray(SHA256_LEN) else salt
         val prk = hmacSha256(effectiveSalt, ikm)
         val out = ByteArray(length)
@@ -121,7 +121,7 @@ object Crypto {
      */
     fun itemKey(masterKey: ByteArray, itemId: String): ByteArray {
         requireKey(masterKey, "master_key")
-        require(itemId.isNotEmpty()) { "item_id 不能为空" }
+        require(itemId.isNotEmpty()) { "item_id must not be empty" }
         return hkdfSha256(masterKey, SALT_ITEM.toUtf8(), itemId.toUtf8(), KEY_LEN)
     }
 
@@ -133,8 +133,8 @@ object Crypto {
      * @return 32B KEK
      */
     fun pairKek(codeBytes: ByteArray, codeId: String): ByteArray {
-        require(codeBytes.size == PAIR_CODE_LEN) { "配对码必须 $PAIR_CODE_LEN 字节，实际 ${codeBytes.size}" }
-        require(codeId.isNotEmpty()) { "code_id 不能为空" }
+        require(codeBytes.size == PAIR_CODE_LEN) { "pair code must be $PAIR_CODE_LEN bytes, got ${codeBytes.size}" }
+        require(codeId.isNotEmpty()) { "code_id must not be empty" }
         return hkdfSha256(codeBytes, SALT_PAIR.toUtf8(), codeId.toUtf8(), KEY_LEN)
     }
 
@@ -203,7 +203,7 @@ object Crypto {
      * @return 32B master_key
      */
     fun openPairBlob(kek: ByteArray, blob: ByteArray): ByteArray {
-        require(blob.size >= NONCE_LEN + TAG_LEN) { "配对 blob 过短: ${blob.size}" }
+        require(blob.size >= NONCE_LEN + TAG_LEN) { "pairing blob too short: ${blob.size}" }
         val nonce = blob.copyOfRange(0, NONCE_LEN)
         val body = blob.copyOfRange(NONCE_LEN, blob.size)
         val plain = open(kek, nonce, body, ByteArray(0))
@@ -252,7 +252,7 @@ object Crypto {
      * @return 32B 原始公钥
      */
     fun ed25519PublicKey(seed: ByteArray): ByteArray {
-        require(seed.size == ED25519_SEED_LEN) { "Ed25519 种子必须 $ED25519_SEED_LEN 字节" }
+        require(seed.size == ED25519_SEED_LEN) { "Ed25519 seed must be $ED25519_SEED_LEN bytes" }
         return Ed25519PrivateKeyParameters(seed, 0).generatePublicKey().encoded
     }
 
@@ -264,7 +264,7 @@ object Crypto {
      * @return 64B 原始签名
      */
     fun ed25519Sign(seed: ByteArray, message: ByteArray): ByteArray {
-        require(seed.size == ED25519_SEED_LEN) { "Ed25519 种子必须 $ED25519_SEED_LEN 字节" }
+        require(seed.size == ED25519_SEED_LEN) { "Ed25519 seed must be $ED25519_SEED_LEN bytes" }
         val signer = Ed25519Signer()
         signer.init(true, Ed25519PrivateKeyParameters(seed, 0))
         signer.update(message, 0, message.size)
@@ -346,7 +346,7 @@ object Crypto {
      * @throws IllegalArgumentException 编码非法时
      */
     fun base32Decode(text: String): ByteArray =
-        Base32.decode(text) ?: throw IllegalArgumentException("base32 编码非法")
+        Base32.decode(text) ?: throw IllegalArgumentException("invalid base32 encoding")
 
     /**
      * 解析配对码（容忍分组符/小写/填充），结果必须恰好 32B。
@@ -356,7 +356,7 @@ object Crypto {
      */
     fun parsePairCode(text: String): ByteArray {
         val code = base32Decode(text)
-        require(code.size == PAIR_CODE_LEN) { "配对码必须 $PAIR_CODE_LEN 字节，实际 ${code.size}" }
+        require(code.size == PAIR_CODE_LEN) { "pair code must be $PAIR_CODE_LEN bytes, got ${code.size}" }
         return code
     }
 
@@ -378,7 +378,7 @@ object Crypto {
      * @return 随机字节
      */
     fun random(n: Int): ByteArray {
-        require(n > 0) { "随机数长度必须 > 0" }
+        require(n > 0) { "random length must be > 0" }
         val out = ByteArray(n)
         java.security.SecureRandom().nextBytes(out)
         return out
@@ -397,8 +397,8 @@ object Crypto {
 
     /** 执行一次 AES-256-GCM 加/解密。 */
     private fun gcm(mode: Int, key: ByteArray, nonce: ByteArray, input: ByteArray, aad: ByteArray): ByteArray {
-        require(key.size == KEY_LEN) { "密钥必须 $KEY_LEN 字节，实际 ${key.size}" }
-        require(nonce.size == NONCE_LEN) { "nonce 必须 $NONCE_LEN 字节，实际 ${nonce.size}" }
+        require(key.size == KEY_LEN) { "key must be $KEY_LEN bytes, got ${key.size}" }
+        require(nonce.size == NONCE_LEN) { "nonce must be $NONCE_LEN bytes, got ${nonce.size}" }
         val cipher = Cipher.getInstance(AES_TRANSFORMATION)
         cipher.init(mode, SecretKeySpec(key, "AES"), GCMParameterSpec(GCM_TAG_BITS, nonce))
         if (aad.isNotEmpty()) cipher.updateAAD(aad)
@@ -407,7 +407,7 @@ object Crypto {
 
     /** 校验 32B 定长密钥。 */
     private fun requireKey(key: ByteArray, name: String) {
-        require(key.size == KEY_LEN) { "$name 必须 $KEY_LEN 字节，实际 ${key.size}" }
+        require(key.size == KEY_LEN) { "$name must be $KEY_LEN bytes, got ${key.size}" }
     }
 
     /** 把字节数组编码为小写十六进制。 */

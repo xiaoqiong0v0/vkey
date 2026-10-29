@@ -1,5 +1,6 @@
 package dev.xiaoqiong.vkey
 
+import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import android.view.WindowManager
@@ -60,12 +61,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
 import androidx.core.content.ContextCompat
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.xiaoqiong.vkey.i18n.LocaleSupport
 import dev.xiaoqiong.vkey.sync.ItemJson
 import dev.xiaoqiong.vkey.sync.ItemsSync
 import dev.xiaoqiong.vkey.sync.Links
@@ -76,11 +79,14 @@ import dev.xiaoqiong.vkey.ui.IssuerIcon
 import dev.xiaoqiong.vkey.ui.clearClipboard
 import dev.xiaoqiong.vkey.ui.copyToClipboard
 import dev.xiaoqiong.vkey.ui.describeFailure
-import dev.xiaoqiong.vkey.ui.formatSyncTime
+import dev.xiaoqiong.vkey.ui.theme.VkeyTheme
 import dev.xiaoqiong.vkey.ui.vkeyPageAnimationsDisabled
 import dev.xiaoqiong.vkey.ui.vkeyPageTransition
+import dev.xiaoqiong.vkey.vault.AppSettings
 import dev.xiaoqiong.vkey.vault.Base32
 import dev.xiaoqiong.vkey.vault.DeviceConfig
+import dev.xiaoqiong.vkey.vault.LanguageMode
+import dev.xiaoqiong.vkey.vault.ThemeMode
 import dev.xiaoqiong.vkey.vault.TotpItem
 import dev.xiaoqiong.vkey.vault.VaultData
 import dev.xiaoqiong.vkey.vault.VaultStore
@@ -117,17 +123,20 @@ private enum class VkeyPage(val depth: Int) {
     HOME(0),
     SYNC(1),
     SCAN(1),
+    ABOUT(2),
 }
 
 /** 应用入口：持有库状态与「自动锁定」逻辑，UI 全部在 Compose 里。 */
 class MainActivity : androidx.fragment.app.FragmentActivity() {
 
     private lateinit var store: VaultStore
-    private lateinit var settings: dev.xiaoqiong.vkey.vault.AppSettings
+    private lateinit var settings: AppSettings
 
     private val vault = mutableStateOf<VaultData?>(null)
     private val locked = mutableStateOf(false)
-    private val lockMessage = mutableStateOf("正在验证…")
+
+    /** 解锁页状态文案；真实文案在 onCreate 里按当前语言取，避免构造期访问资源。 */
+    private val lockMessage = mutableStateOf("")
     private val canRetry = mutableStateOf(false)
 
     /** 深链带来的服务器地址（非空表示要打开「同步配置」页）。 */
@@ -142,13 +151,23 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
     /** 验证弹窗关闭会触发一次 onResume，用它跳过循环触发。 */
     private var skipNextResume = false
 
+    /**
+     * 应用设置里的语言偏好：在 Activity 创建前包装 base context，
+     * 使 `resources`（`getString` / `stringResource`）按选定语言取值。
+     * 「跟随系统」时原样返回，不改写系统配置。
+     */
+    override fun attachBaseContext(newBase: Context) {
+        super.attachBaseContext(LocaleSupport.wrap(newBase, AppSettings(newBase).language))
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // 防截屏（验证码属于敏感信息）
         window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
 
         store = VaultStore(filesDir)
-        settings = dev.xiaoqiong.vkey.vault.AppSettings(this)
+        settings = AppSettings(this)
+        lockMessage.value = getString(R.string.lock_verifying)
         val loaded = store.read()
         // 旧版本把 webauthn 误并入 items：升级后一次性迁移到「密钥」列表并落盘
         val migrated = loaded?.withLegacyWebAuthnMigrated()
@@ -158,7 +177,10 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
         handleDeepLink(intent)
 
         setContent {
-            MaterialTheme {
+            // 主题模式只影响 Compose 配色：改设置即重组，无需重建 Activity
+            var themeMode by remember { mutableStateOf(settings.themeMode) }
+            var language by remember { mutableStateOf(settings.language) }
+            VkeyTheme(mode = themeMode) {
                 VkeyApp(
                     vault = vault.value,
                     locked = locked.value,
@@ -179,6 +201,18 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                     onAutoLockChange = { settings.autoLockOnResume = it },
                     serverUrl = settings.serverUrl,
                     onServerUrlChange = { settings.serverUrl = it },
+                    themeMode = themeMode,
+                    onThemeModeChange = { mode ->
+                        themeMode = mode
+                        settings.themeMode = mode
+                    },
+                    language = language,
+                    onLanguageChange = { mode ->
+                        language = mode
+                        // 语言在 attachBaseContext 里应用：先落盘再重建，冷启动同样生效
+                        settings.language = mode
+                        recreate()
+                    },
                     pendingSyncServer = pendingSyncServer.value,
                     pendingPairCode = pendingPairCode.value,
                     onPendingHandled = {
@@ -213,7 +247,7 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
             settings.serverUrl = server
             pendingPairCode.value = null
             pendingSyncServer.value = server
-            Toast.makeText(this, "服务器地址已设置：$server", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, getString(R.string.toast_server_set, server), Toast.LENGTH_LONG).show()
             return
         }
 
@@ -221,7 +255,7 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
         if (code != null) {
             pendingPairCode.value = code
             pendingSyncServer.value = settings.serverUrl
-            Toast.makeText(this, "已识别配对码，请在「同步配置」里领取", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, getString(R.string.toast_pair_code_detected), Toast.LENGTH_LONG).show()
         }
     }
 
@@ -256,13 +290,13 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
             androidx.biometric.BiometricManager.Authenticators.DEVICE_CREDENTIAL
         val km = getSystemService(KEYGUARD_SERVICE) as android.app.KeyguardManager
         if (!km.isDeviceSecure) {
-            lockMessage.value = "请先在系统设置里设置锁屏密码或录入指纹"
+            lockMessage.value = getString(R.string.lock_need_device_credential)
             canRetry.value = false
             return
         }
         authInFlight = true
         canRetry.value = false
-        lockMessage.value = "正在验证…"
+        lockMessage.value = getString(R.string.lock_verifying)
         val prompt = androidx.biometric.BiometricPrompt(
             this,
             androidx.core.content.ContextCompat.getMainExecutor(this),
@@ -277,25 +311,25 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                 override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
                     authInFlight = false
                     skipNextResume = true
-                    lockMessage.value = "验证未通过：$errString"
+                    lockMessage.value = getString(R.string.lock_failed, errString)
                     canRetry.value = true
                 }
 
                 override fun onAuthenticationFailed() {
-                    lockMessage.value = "未识别，请重试"
+                    lockMessage.value = getString(R.string.lock_not_recognized)
                 }
             },
         )
         val info = androidx.biometric.BiometricPrompt.PromptInfo.Builder()
-            .setTitle("解锁 vkey")
-            .setSubtitle("使用指纹 / 面容 / 锁屏密码")
+            .setTitle(getString(R.string.biometric_title))
+            .setSubtitle(getString(R.string.biometric_subtitle))
             .setAllowedAuthenticators(allowed)
             .build()
         runCatching { prompt.authenticate(info) }
             .onFailure {
                 authInFlight = false
                 skipNextResume = true
-                lockMessage.value = "无法启动系统验证：${it.message}"
+                lockMessage.value = getString(R.string.lock_unavailable, it.message.orEmpty())
                 canRetry.value = true
             }
     }
@@ -316,6 +350,10 @@ private fun VkeyApp(
     onAutoLockChange: (Boolean) -> Unit,
     serverUrl: String,
     onServerUrlChange: (String) -> Unit,
+    themeMode: ThemeMode,
+    onThemeModeChange: (ThemeMode) -> Unit,
+    language: LanguageMode,
+    onLanguageChange: (LanguageMode) -> Unit,
     pendingSyncServer: String?,
     pendingPairCode: String?,
     onPendingHandled: () -> Unit,
@@ -331,6 +369,10 @@ private fun VkeyApp(
             onAutoLockChange = onAutoLockChange,
             serverUrl = serverUrl,
             onServerUrlChange = onServerUrlChange,
+            themeMode = themeMode,
+            onThemeModeChange = onThemeModeChange,
+            language = language,
+            onLanguageChange = onLanguageChange,
             pendingSyncServer = pendingSyncServer,
             pendingPairCode = pendingPairCode,
             onPendingHandled = onPendingHandled,
@@ -350,10 +392,10 @@ private fun SetupScreen(onCreate: (VaultData) -> Unit) {
         modifier = Modifier.fillMaxSize().padding(24.dp),
         verticalArrangement = Arrangement.Center,
     ) {
-        Text("创建 vkey 库", style = MaterialTheme.typography.headlineSmall)
+        Text(stringResource(R.string.setup_title), style = MaterialTheme.typography.headlineSmall)
         Spacer(Modifier.height(8.dp))
         Text(
-            "这是你的恢复码（52 位）。它等价于你的主密钥：丢失后任何设备都无法解开你的数据。",
+            stringResource(R.string.setup_recovery_hint),
             style = MaterialTheme.typography.bodyMedium,
         )
         Spacer(Modifier.height(16.dp))
@@ -369,21 +411,21 @@ private fun SetupScreen(onCreate: (VaultData) -> Unit) {
         Spacer(Modifier.height(8.dp))
         TextButton(onClick = {
             copyToClipboard(context, recoveryCode, sensitive = true)
-            Toast.makeText(context, "恢复码已复制", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, context.getString(R.string.toast_recovery_copied), Toast.LENGTH_SHORT).show()
         }) {
-            Text("复制恢复码")
+            Text(stringResource(R.string.setup_copy_recovery))
         }
         Spacer(Modifier.height(8.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Checkbox(checked = saved, onCheckedChange = { saved = it })
-            Text("我已把恢复码保存到安全的地方")
+            Text(stringResource(R.string.setup_saved_check))
         }
         Spacer(Modifier.height(16.dp))
         Button(
             onClick = { onCreate(store.create(recoveryCode)) },
             enabled = saved,
             modifier = Modifier.fillMaxWidth(),
-        ) { Text("进入") }
+        ) { Text(stringResource(R.string.action_continue)) }
     }
 }
 
@@ -404,13 +446,13 @@ private fun LockScreen(message: String, canRetry: Boolean, onRetry: () -> Unit) 
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Text("vkey 已锁定", style = MaterialTheme.typography.headlineSmall)
+        Text(stringResource(R.string.lock_title), style = MaterialTheme.typography.headlineSmall)
         Spacer(Modifier.height(12.dp))
         Text(message, style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center)
         if (canRetry) {
             Spacer(Modifier.height(8.dp))
             Text(
-                "点屏幕重试",
+                stringResource(R.string.lock_tap_retry),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.primary,
             )
@@ -427,6 +469,10 @@ private fun VaultScreen(
     onAutoLockChange: (Boolean) -> Unit,
     serverUrl: String,
     onServerUrlChange: (String) -> Unit,
+    themeMode: ThemeMode,
+    onThemeModeChange: (ThemeMode) -> Unit,
+    language: LanguageMode,
+    onLanguageChange: (LanguageMode) -> Unit,
     pendingSyncServer: String?,
     pendingPairCode: String?,
     onPendingHandled: () -> Unit,
@@ -454,7 +500,7 @@ private fun VaultScreen(
         } else {
             lastBackAt = now
             android.widget.Toast
-                .makeText(context, "再按一次返回退出", android.widget.Toast.LENGTH_SHORT)
+                .makeText(context, context.getString(R.string.toast_press_back_again), android.widget.Toast.LENGTH_SHORT)
                 .show()
         }
     }
@@ -493,7 +539,7 @@ private fun VaultScreen(
                 lastSyncError = null
                 outcome.stats
             } catch (t: Throwable) {
-                lastSyncError = describeFailure(t)
+                lastSyncError = describeFailure(context, t)
                 throw t
             }
         }
@@ -540,7 +586,7 @@ private fun VaultScreen(
                 liveWebAuthn = live.items
                 webAuthnSkipped = live.skipped
             } catch (t: Throwable) {
-                webAuthnLoadError = describeFailure(t)
+                webAuthnLoadError = describeFailure(context, t)
             } finally {
                 webAuthnLoading = false
             }
@@ -552,7 +598,7 @@ private fun VaultScreen(
         scope.launch {
             val config = latestVault.device
             if (config == null) {
-                webAuthnActionError = "先完成同步配置"
+                webAuthnActionError = context.getString(R.string.err_sync_not_configured)
             } else {
                 webAuthnActionError = null
                 try {
@@ -560,7 +606,7 @@ private fun VaultScreen(
                     withContext(Dispatchers.IO) { ItemsSync.revokeWebAuthn(api, item) }
                     loadWebAuthn()
                 } catch (t: Throwable) {
-                    webAuthnActionError = describeFailure(t)
+                    webAuthnActionError = describeFailure(context, t)
                 }
             }
         }
@@ -619,13 +665,17 @@ private fun VaultScreen(
                         TopAppBar(
                             title = {
                                 Text(
-                                    "vkey · 2FA ${visibleTotp.size} · 密钥 ${liveWebAuthn.size}",
+                                    stringResource(
+                                        R.string.home_title,
+                                        visibleTotp.size,
+                                        liveWebAuthn.size,
+                                    ),
                                     style = MaterialTheme.typography.titleMedium,
                                 )
                             },
                             actions = {
-                                TextButton(onClick = { syncPrefill = ""; topPage = VkeyPage.SYNC }) { Text("设置") }
-                                TextButton(onClick = onLock) { Text("锁定") }
+                                TextButton(onClick = { syncPrefill = ""; topPage = VkeyPage.SYNC }) { Text(stringResource(R.string.action_settings)) }
+                                TextButton(onClick = onLock) { Text(stringResource(R.string.action_lock)) }
                             },
                         )
                     },
@@ -640,7 +690,7 @@ private fun VaultScreen(
                             Tab(
                                 selected = pagerState.currentPage == PAGE_WEBAUTHN,
                                 onClick = { scope.launch { pagerState.animateScrollToPage(PAGE_WEBAUTHN) } },
-                                text = { Text("密钥") },
+                                text = { Text(stringResource(R.string.tab_webauthn)) },
                             )
                         }
                         HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { page ->
@@ -652,7 +702,7 @@ private fun VaultScreen(
                                         copyToClipboard(context, code, sensitive = true)
                                         Toast.makeText(
                                             context,
-                                            "验证码已复制，30 秒后自动清除",
+                                            context.getString(R.string.toast_code_copied),
                                             Toast.LENGTH_SHORT,
                                         ).show()
                                         scope.launch {
@@ -707,14 +757,14 @@ private fun VaultScreen(
                                     .offset(y = ((1f - expandProgress) * 12).dp),
                             ) {
                                 ActionButton(
-                                    label = "扫描二维码",
+                                    label = stringResource(R.string.fab_scan_qr),
                                     onClick = {
                                         fabExpanded = false
                                         topPage = VkeyPage.SCAN
                                     },
                                 )
                                 ActionButton(
-                                    label = "手动输入",
+                                    label = stringResource(R.string.fab_manual_input),
                                     onClick = {
                                         fabExpanded = false
                                         showAdd = true
@@ -759,8 +809,17 @@ private fun VaultScreen(
                 onServerUrlChange = onServerUrlChange,
                 autoLockOnResume = autoLockOnResume,
                 onAutoLockChange = onAutoLockChange,
+                themeMode = themeMode,
+                onThemeModeChange = onThemeModeChange,
+                language = language,
+                onLanguageChange = onLanguageChange,
                 onClearDevice = { onPersist(vault.copy(device = null)) },
+                onOpenAbout = { topPage = VkeyPage.ABOUT },
                 onClose = { topPage = VkeyPage.HOME },
+            )
+
+            VkeyPage.ABOUT -> dev.xiaoqiong.vkey.ui.AboutScreen(
+                onClose = { topPage = VkeyPage.SYNC },
             )
 
             VkeyPage.SCAN -> dev.xiaoqiong.vkey.ui.ScanScreen(
@@ -794,8 +853,8 @@ private fun VaultScreen(
     pendingDelete?.let { item ->
         AlertDialog(
             onDismissRequest = { pendingDelete = null },
-            title = { Text("删除 2FA 条目") },
-            text = { Text("删除后无法恢复（服务端也会删除）。") },
+            title = { Text(stringResource(R.string.dialog_delete_totp_title)) },
+            text = { Text(stringResource(R.string.dialog_delete_totp_text)) },
             confirmButton = {
                 TextButton(onClick = {
                     val now = System.currentTimeMillis() / 1000
@@ -807,9 +866,13 @@ private fun VaultScreen(
                         ),
                     )
                     pendingDelete = null
-                }) { Text("删除") }
+                }) { Text(stringResource(R.string.action_delete)) }
             },
-            dismissButton = { TextButton(onClick = { pendingDelete = null }) { Text("取消") } },
+            dismissButton = {
+                TextButton(onClick = { pendingDelete = null }) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            },
         )
     }
 
@@ -817,15 +880,19 @@ private fun VaultScreen(
     pendingRevoke?.let { item ->
         AlertDialog(
             onDismissRequest = { pendingRevoke = null },
-            title = { Text("吊销密钥凭据") },
-            text = { Text("吊销后所有设备（含电脑）将无法再用该站点凭据。需要连接服务器。") },
+            title = { Text(stringResource(R.string.dialog_revoke_title)) },
+            text = { Text(stringResource(R.string.dialog_revoke_text)) },
             confirmButton = {
                 TextButton(onClick = {
                     pendingRevoke = null
                     revokeWebAuthn(item)
-                }) { Text("吊销") }
+                }) { Text(stringResource(R.string.action_revoke)) }
             },
-            dismissButton = { TextButton(onClick = { pendingRevoke = null }) { Text("取消") } },
+            dismissButton = {
+                TextButton(onClick = { pendingRevoke = null }) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            },
         )
     }
 }
@@ -876,7 +943,10 @@ private fun TotpList(
     onDelete: (TotpItem) -> Unit,
 ) {
     if (entries.isEmpty()) {
-        EmptyState("还没有 2FA 条目", "点右下角「+」，可扫描二维码或手动输入 Base32 密钥")
+        EmptyState(
+            title = stringResource(R.string.empty_totp_title),
+            description = stringResource(R.string.empty_totp_desc),
+        )
         return
     }
     // 展示顺序由 UI 决定（同步层保持服务端顺序）：按更新时间倒序
@@ -931,8 +1001,8 @@ private fun WebAuthnLivePage(
 ) {
     if (!configured) {
         EmptyState(
-            "先完成同步配置",
-            "密钥只做实时管理：请在「设置」里完成配对或登录后再查看。",
+            title = stringResource(R.string.empty_webauthn_unconfigured_title),
+            description = stringResource(R.string.empty_webauthn_unconfigured_desc),
         )
         return
     }
@@ -943,11 +1013,17 @@ private fun WebAuthnLivePage(
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
             Text(
-                text = if (loading) "正在加载…" else "拉取 ${entries.size} / 跳过 $skipped",
+                text = if (loading) {
+                    stringResource(R.string.webauthn_loading)
+                } else {
+                    stringResource(R.string.webauthn_counts, entries.size, skipped)
+                },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            TextButton(onClick = onRefresh, enabled = !loading) { Text("刷新") }
+            TextButton(onClick = onRefresh, enabled = !loading) {
+                Text(stringResource(R.string.action_refresh))
+            }
         }
         actionError?.let { message ->
             Text(
@@ -964,8 +1040,8 @@ private fun WebAuthnLivePage(
                 )
                 error != null -> WebAuthnErrorState(error = error, onRetry = onRefresh)
                 entries.isEmpty() -> EmptyState(
-                    "没有密钥凭据",
-                    "桌面端注册的虚拟密钥会出现在这里；手机只读/可吊销（不能在这里新增）。",
+                    title = stringResource(R.string.empty_webauthn_title),
+                    description = stringResource(R.string.empty_webauthn_desc),
                 )
                 else -> WebAuthnList(entries = entries, onRevoke = onRevoke)
             }
@@ -981,7 +1057,7 @@ private fun WebAuthnErrorState(error: String, onRetry: () -> Unit) {
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Text("加载失败", style = MaterialTheme.typography.titleMedium)
+        Text(stringResource(R.string.webauthn_load_failed), style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(8.dp))
         Text(
             text = error,
@@ -989,7 +1065,7 @@ private fun WebAuthnErrorState(error: String, onRetry: () -> Unit) {
             textAlign = TextAlign.Center,
         )
         Spacer(Modifier.height(12.dp))
-        Button(onClick = onRetry) { Text("重试") }
+        Button(onClick = onRetry) { Text(stringResource(R.string.action_retry)) }
     }
 }
 
@@ -1003,8 +1079,8 @@ private fun WebAuthnErrorState(error: String, onRetry: () -> Unit) {
 private fun WebAuthnList(entries: List<WebAuthnItem>, onRevoke: (WebAuthnItem) -> Unit) {
     if (entries.isEmpty()) {
         EmptyState(
-            "没有密钥凭据",
-            "这些是桌面端的虚拟密钥凭据，手机只读/可吊销（不能在这里新增）。",
+            title = stringResource(R.string.empty_webauthn_title),
+            description = stringResource(R.string.empty_webauthn_list_desc),
         )
         return
     }
@@ -1056,22 +1132,25 @@ private fun WebAuthnCard(item: WebAuthnItem, onRevoke: () -> Unit) {
             verticalAlignment = Alignment.Top,
         ) {
             Column(Modifier.weight(1f)) {
-                Text(item.rpId.ifBlank { "(未知站点)" }, style = MaterialTheme.typography.titleMedium)
+                Text(
+                    item.rpId.ifBlank { stringResource(R.string.unknown_site) },
+                    style = MaterialTheme.typography.titleMedium,
+                )
                 Text(
                     item.username.ifBlank { item.displayName }.ifBlank { item.label }
-                        .ifBlank { "(未命名账号)" },
+                        .ifBlank { stringResource(R.string.unnamed_account) },
                     style = MaterialTheme.typography.bodySmall,
                 )
                 if (createdAt != null) {
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "创建于 $createdAt",
+                        stringResource(R.string.webauthn_created_at, createdAt),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
-            TextButton(onClick = onRevoke) { Text("吊销") }
+            TextButton(onClick = onRevoke) { Text(stringResource(R.string.action_revoke)) }
         }
     }
 }
@@ -1115,10 +1194,13 @@ private fun TotpCard(
                 IssuerIcon(issuer = item.issuer, label = item.account)
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
-                    Text(item.issuer.ifBlank { "(未命名)" }, style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        item.issuer.ifBlank { stringResource(R.string.unnamed_issuer) },
+                        style = MaterialTheme.typography.titleMedium,
+                    )
                     Text(item.account, style = MaterialTheme.typography.bodySmall)
                 }
-                TextButton(onClick = onDelete) { Text("删除") }
+                TextButton(onClick = onDelete) { Text(stringResource(R.string.action_delete)) }
             }
             Spacer(Modifier.height(8.dp))
             Text(
@@ -1138,7 +1220,7 @@ private fun TotpCard(
             )
             Spacer(Modifier.height(8.dp))
             Button(onClick = { onCopy(code) }, modifier = Modifier.fillMaxWidth()) {
-                Text("复制（${remain}s）")
+                Text(stringResource(R.string.totp_copy_countdown, remain))
             }
         }
         HorizontalDivider()
@@ -1147,6 +1229,7 @@ private fun TotpCard(
 
 @Composable
 private fun AddDialog(onDismiss: () -> Unit, onAdd: (String, String, String) -> Unit) {
+    val context = LocalContext.current
     var issuer by remember { mutableStateOf("") }
     var account by remember { mutableStateOf("") }
     var secret by remember { mutableStateOf("") }
@@ -1154,13 +1237,13 @@ private fun AddDialog(onDismiss: () -> Unit, onAdd: (String, String, String) -> 
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("添加 TOTP") },
+        title = { Text(stringResource(R.string.dialog_add_totp_title)) },
         text = {
             Column {
                 OutlinedTextField(
                     value = issuer,
                     onValueChange = { issuer = it },
-                    label = { Text("issuer（如 GitHub）") },
+                    label = { Text(stringResource(R.string.label_issuer)) },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
@@ -1168,7 +1251,7 @@ private fun AddDialog(onDismiss: () -> Unit, onAdd: (String, String, String) -> 
                 OutlinedTextField(
                     value = account,
                     onValueChange = { account = it },
-                    label = { Text("账号") },
+                    label = { Text(stringResource(R.string.label_account)) },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
@@ -1176,7 +1259,7 @@ private fun AddDialog(onDismiss: () -> Unit, onAdd: (String, String, String) -> 
                 OutlinedTextField(
                     value = secret,
                     onValueChange = { secret = it },
-                    label = { Text("Base32 密钥") },
+                    label = { Text(stringResource(R.string.label_base32_secret)) },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
                     modifier = Modifier.fillMaxWidth(),
@@ -1192,12 +1275,15 @@ private fun AddDialog(onDismiss: () -> Unit, onAdd: (String, String, String) -> 
                 val key = secret.trim()
                 val decoded = Base32.decode(key)
                 when {
-                    decoded == null -> error = "密钥不是合法的 Base32"
-                    decoded.size < 10 -> error = "解码后长度过短（${decoded.size}B），疑似不完整"
+                    decoded == null -> error = context.getString(R.string.err_secret_not_base32)
+                    decoded.size < 10 ->
+                        error = context.getString(R.string.err_secret_too_short, decoded.size)
                     else -> onAdd(issuer.trim(), account.trim(), key.uppercase())
                 }
-            }) { Text("保存") }
+            }) { Text(stringResource(R.string.action_save)) }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) }
+        },
     )
 }

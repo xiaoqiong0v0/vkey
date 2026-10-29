@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      窗口级主题（Compose 之外，决定冷启动首帧与系统栏底色）。
+      深色变体放在 values-night：系统跟随深色时首帧不至于闪白；
+      应用内强制深色/浅色由 Compose 的 VkeyTheme 负责。
+    -->
+    <style name="Theme.Vkey" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#FF101418</item>
+    </style>
+</resources>

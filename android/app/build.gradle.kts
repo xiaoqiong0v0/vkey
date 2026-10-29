@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -8,6 +10,15 @@ plugins {
 android {
     namespace = "dev.xiaoqiong.vkey"
     compileSdk = 35
+
+    // 正式签名配置：优先读 <repo>/android/keystore.properties（不入库），
+    // 其次读环境变量 VKEY_KEYSTORE_*。两者都缺失时 release 无签名（CI 会拒绝发布）。
+    val keystoreProps = Properties().apply {
+        val f = rootProject.file("keystore.properties")
+        if (f.isFile) f.inputStream().use { load(it) }
+    }
+    fun signingValue(key: String, env: String): String? =
+        keystoreProps.getProperty(key) ?: System.getenv(env)
 
     defaultConfig {
         applicationId = "dev.xiaoqiong.vkey"
@@ -30,12 +41,28 @@ android {
         jvmTarget = "17"
     }
 
+    signingConfigs {
+        create("release") {
+            val storePath = signingValue("storeFile", "VKEY_KEYSTORE_FILE")
+            val storePassword = signingValue("storePassword", "VKEY_KEYSTORE_PASSWORD")
+            val keyAlias = signingValue("keyAlias", "VKEY_KEY_ALIAS")
+            val keyPassword = signingValue("keyPassword", "VKEY_KEY_PASSWORD")
+            if (storePath != null && storePassword != null && keyAlias != null && keyPassword != null) {
+                storeFile = file(storePath)
+                this.storePassword = storePassword
+                this.keyAlias = keyAlias
+                this.keyPassword = keyPassword
+            }
+        }
+    }
+
     buildTypes {
         debug {
             isMinifyEnabled = false
         }
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("release")
         }
     }
 
@@ -43,10 +70,26 @@ android {
         resources.excludes += setOf("/META-INF/{AL2.0,LGPL2.1}")
     }
 
+    // 「关于」页从 assets/LICENSE 读取许可声明：把仓库根的 LICENSE 复制进 assets，
+    // 保持单一真源（不要在仓库里维护第二份副本）。
+    sourceSets["main"].assets.srcDir(layout.buildDirectory.dir("generated/licenseAssets"))
+
     // 同步/HTTP 层会调用 android.util.Log：单测里按默认值（no-op）返回，避免抛 "not mocked"
     testOptions {
         unitTests.isReturnDefaultValues = true
     }
+}
+
+// 把仓库根的 LICENSE 复制进 assets（「关于」页读取，保持单一真源）。
+val copyLicenseToAssets by tasks.registering(Copy::class) {
+    val licenseFile = rootProject.file("../LICENSE")
+    onlyIf { licenseFile.isFile }
+    from(licenseFile)
+    into(layout.buildDirectory.dir("generated/licenseAssets"))
+}
+
+tasks.matching { it.name == "preBuild" }.configureEach {
+    dependsOn(copyLicenseToAssets)
 }
 
 // 单元测试直接读取仓库内的协议向量，避免复制副本导致漂移。

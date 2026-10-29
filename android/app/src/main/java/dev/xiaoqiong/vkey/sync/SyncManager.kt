@@ -185,7 +185,7 @@ object SyncManager {
      */
     fun parseMasterKey(text: String): ByteArray {
         val bytes = Crypto.base32Decode(text)
-        require(bytes.size == MASTER_KEY_BYTES) { "master_key 必须是 32 字节（52 位 base32）" }
+        require(bytes.size == MASTER_KEY_BYTES) { "master_key must be 32 bytes (52 base32 characters)" }
         return bytes
     }
 
@@ -251,7 +251,7 @@ object SyncManager {
     /** 解码已落盘的 Ed25519 种子并校验长度。 */
     private fun decodeSeed(seedB64: String): ByteArray {
         val seed = Crypto.b64urlDecode(seedB64)
-        require(seed.size == Crypto.ED25519_SEED_LEN) { "设备种子长度非法: ${seed.size}" }
+        require(seed.size == Crypto.ED25519_SEED_LEN) { "illegal device seed length: ${seed.size}" }
         return seed
     }
 

@@ -1,4 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.Vkey" parent="android:Theme.Material.Light.NoActionBar" />
+    <!--
+      窗口级主题（Compose 之外，决定冷启动首帧与窗口底色）。
+      应用内强制浅色/深色由 Compose 的 VkeyTheme 负责，这里只给「跟随系统」的首帧兜底。
+    -->
+    <style name="Theme.Vkey" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">#FFF7F9FC</item>
+    </style>
 </resources>

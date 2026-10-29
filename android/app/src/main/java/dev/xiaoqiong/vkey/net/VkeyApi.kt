@@ -257,7 +257,7 @@ class VkeyApi(
      * @return 本页条目与 next 游标（含墓碑）
      */
     fun listItems(since: Long = 0L): ItemsPage {
-        require(since >= 0) { "since 必须非负" }
+        require(since >= 0) { "since must be non-negative" }
         return execute(get("/api/v1/items?since=$since"))
     }
 
@@ -268,7 +268,7 @@ class VkeyApi(
      * @return 与 [items] 顺序一一对应的写入结果
      */
     fun pushItems(items: List<ItemWrite>): PushResponse {
-        require(items.size <= MAX_ITEMS_PER_PUSH) { "单次最多 $MAX_ITEMS_PER_PUSH 条" }
+        require(items.size <= MAX_ITEMS_PER_PUSH) { "at most $MAX_ITEMS_PER_PUSH items per push" }
         return execute(post("/api/v1/items", ItemPushRequest(items)))
     }
 
@@ -347,7 +347,7 @@ class VkeyApi(
             // 只打方法/路径与异常摘要，绝不打 token、密文或明文
             Log.w(HTTP_TAG, "${request.method} ${request.url.encodedPath} -> 0 " +
                 "code=network_error msg=${e.message}")
-            throw ApiException("network_error", e.message ?: "网络请求失败", 0)
+            throw ApiException("network_error", e.message ?: "network request failed", 0)
         }
         response.use {
             val text = response.body?.string().orEmpty()
@@ -357,11 +357,11 @@ class VkeyApi(
                     "code=${error.code} msg=${error.message}")
                 throw error
             }
-            if (text.isBlank()) throw ApiException("empty_body", "服务端返回空响应", response.code)
+            if (text.isBlank()) throw ApiException("empty_body", "server returned an empty body", response.code)
             return try {
                 json.decodeFromString<T>(text)
             } catch (e: SerializationException) {
-                throw ApiException("invalid_response", e.message ?: "响应不是合法 JSON", response.code)
+                throw ApiException("invalid_response", e.message ?: "response is not valid JSON", response.code)
             }
         }
     }

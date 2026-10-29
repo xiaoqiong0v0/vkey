@@ -29,6 +29,7 @@ import androidx.compose.ui.unit.dp
 import dev.xiaoqiong.vkey.net.FaviconCache
 import dev.xiaoqiong.vkey.net.FaviconFetcher
 import dev.xiaoqiong.vkey.net.IssuerDomains
+import dev.xiaoqiong.vkey.ui.theme.IssuerBadgeColors
 
 /** 默认图标边长（与 2FA 卡片行高协调）。 */
 private val ICON_SIZE: Dp = 40.dp
@@ -38,22 +39,6 @@ private val ICON_CORNER: Dp = 12.dp
 
 /** 字母字号相对图标边长的比例。 */
 private const val INITIAL_TEXT_RATIO: Float = 0.42f
-
-/** 字母徽标的底色候选（深色 / 柔和，白字可读）。 */
-private val BADGE_COLORS: List<Color> = listOf(
-    Color(0xFF455A64),
-    Color(0xFF5D4037),
-    Color(0xFF4E342E),
-    Color(0xFF37474F),
-    Color(0xFF4A148C),
-    Color(0xFF1A237E),
-    Color(0xFF00695C),
-    Color(0xFF283593),
-    Color(0xFF6A1B9A),
-    Color(0xFF2E7D32),
-    Color(0xFFAD1457),
-    Color(0xFF00838F),
-)
 
 /**
  * 站点图标：按「首帧就有结论」的方式渲染，避免每次进入列表都先闪一下字母。
@@ -87,7 +72,7 @@ fun IssuerIcon(issuer: String, label: String, size: Dp = ICON_SIZE) {
     }
 
     val initialText = remember(issuer, label) { initialOf(issuer, label) }
-    val badgeColor = remember(issuer) { BADGE_COLORS[issuer.hashCode().mod(BADGE_COLORS.size)] }
+    val badgeColor = remember(issuer) { IssuerBadgeColors[issuer.hashCode().mod(IssuerBadgeColors.size)] }
     val shape = RoundedCornerShape(ICON_CORNER)
     val textSize = with(LocalDensity.current) { (size * INITIAL_TEXT_RATIO).toSp() }
     // 磁盘解码期间保持透明占位：不画字母，也不画底色

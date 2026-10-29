@@ -6,6 +6,10 @@
 //	vkeyd serve  --db <path> --listen :8080 [--domain <域名>] [--artifacts-dir <dir>] [--set-require-master-pw=true|false]
 //	vkeyd policy set --db <path> [--require-master-pw=<bool>] [--user-mode=single|admin]
 //	                           [--max-items-per-user=<n>] [--max-bytes-per-user=<n|20MiB>] [--max-devices-per-user=<n>]
+//	                           [--update-source=github|local] [--update-repo=<owner/repo>] [--update-asset=<file>]
+//	                           [--update-version-code=<n>] [--update-version-name=<x.y.z>]
+//	                           [--update-sha256=<hex>] [--update-size=<n>] [--update-notes=<text>]
+//	vkeyd update show --db <path>
 //	vkeyd user add <username> --db <path> [--ttl 30m] [--domain <域名>]
 //	vkeyd user list --db <path>
 //	vkeyd user disable|enable <username>|--id <id> --db <path>
@@ -62,6 +66,8 @@ func run(args []string) error {
 		return runServe(args[1:])
 	case "policy":
 		return runPolicy(args[1:])
+	case "update":
+		return runUpdate(args[1:])
 	case "user":
 		return runUser(args[1:])
 	case "purge":
@@ -218,12 +224,12 @@ func runServe(args []string) error {
 	}
 }
 
-// runPolicy 处理 `policy set` 子命令：可修改主密码策略、用户模式与每用户配额。
+// runPolicy 处理 `policy set` 子命令：可修改主密码策略、用户模式、每用户配额与 Android 更新信息。
 //
 // 至少给出一个策略开关；各项相互独立，未给出的保持不变。
 func runPolicy(args []string) error {
 	if len(args) == 0 || args[0] != "set" {
-		return errors.New("policy: 用法 `vkeyd policy set --db <path> [--require-master-pw=<bool>] [--user-mode=single|admin] [--max-items-per-user=<n>] [--max-bytes-per-user=<n>] [--max-devices-per-user=<n>]`")
+		return errors.New("policy: 用法 `vkeyd policy set --db <path> [--require-master-pw=<bool>] [--user-mode=single|admin] [--max-items-per-user=<n>] [--max-bytes-per-user=<n>] [--max-devices-per-user=<n>] [--update-source=github|local] [--update-repo=<owner/repo>] [--update-asset=<file>] [--update-version-code=<n>] [--update-version-name=<x.y.z>] [--update-sha256=<hex>] [--update-size=<n>] [--update-notes=<text>]`")
 	}
 	fs := flag.NewFlagSet("policy set", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -233,13 +239,22 @@ func runPolicy(args []string) error {
 	maxItems := fs.String("max-items-per-user", "", "每用户条目数配额；-1 表示不限制（可选）")
 	maxBytes := fs.String("max-bytes-per-user", "", "每用户密文字节配额；支持 20MiB/K/M/G 后缀，-1 不限制（可选）")
 	maxDevices := fs.String("max-devices-per-user", "", "每用户设备数配额；-1 表示不限制（可选）")
+	var upd updateFlagValues
+	fs.StringVar(&upd.Source, "update-source", "", "Android 更新来源：github|local（可选）")
+	fs.StringVar(&upd.Repo, "update-repo", "", "GitHub 仓库 owner/repo（可选）")
+	fs.StringVar(&upd.Asset, "update-asset", "", "APK 产物文件名（可选，缺省 vkey-android.apk）")
+	fs.StringVar(&upd.VersionCode, "update-version-code", "", "Android versionCode（可选）")
+	fs.StringVar(&upd.VersionName, "update-version-name", "", "Android versionName（可选）")
+	fs.StringVar(&upd.SHA256, "update-sha256", "", "APK 的 sha256（64 位 hex，可选）")
+	fs.StringVar(&upd.Size, "update-size", "", "APK 字节数（可选）")
+	fs.StringVar(&upd.Notes, "update-notes", "", "发布说明（可选）")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
 	if *dbPath == "" {
 		return errors.New("policy set: 缺少 --db")
 	}
-	if *require == "" && *userMode == "" && *maxItems == "" && *maxBytes == "" && *maxDevices == "" {
+	if *require == "" && *userMode == "" && *maxItems == "" && *maxBytes == "" && *maxDevices == "" && upd.empty() {
 		return errors.New("policy set: 至少给出一个策略开关")
 	}
 
@@ -289,6 +304,174 @@ func runPolicy(args []string) error {
 			return err
 		}
 		fmt.Fprintf(os.Stderr, "vkeyd: %s 已设置为 %d\n", q.name, v)
+	}
+	return applyUpdateFlags(ctx, st, upd)
+}
+
+// updateFlagValues 收集 `policy set` 的更新信息开关（空串表示未给出）。
+type updateFlagValues struct {
+	Source      string
+	Repo        string
+	Asset       string
+	VersionCode string
+	VersionName string
+	SHA256      string
+	Size        string
+	Notes       string
+}
+
+// empty 判断所有更新信息开关都未给出。
+func (v updateFlagValues) empty() bool {
+	return v.Source == "" && v.Repo == "" && v.Asset == "" && v.VersionCode == "" &&
+		v.VersionName == "" && v.SHA256 == "" && v.Size == "" && v.Notes == ""
+}
+
+// applyUpdateFlags 校验并写入更新信息；写入 version_code 或 sha256 时刷新发布时间。
+//
+// 返回：任一项校验失败时返回错误（此时之前已写入的项保留）。
+func applyUpdateFlags(ctx context.Context, st *store.Store, v updateFlagValues) error {
+	items := []struct {
+		name  string
+		key   string
+		value string
+	}{
+		{"--update-source", store.MetaKeyUpdateSource, v.Source},
+		{"--update-repo", store.MetaKeyUpdateRepo, v.Repo},
+		{"--update-asset", store.MetaKeyUpdateAsset, v.Asset},
+		{"--update-version-code", store.MetaKeyUpdateVersionCode, v.VersionCode},
+		{"--update-version-name", store.MetaKeyUpdateVersionName, v.VersionName},
+		{"--update-sha256", store.MetaKeyUpdateSHA256, v.SHA256},
+		{"--update-size", store.MetaKeyUpdateSize, v.Size},
+		{"--update-notes", store.MetaKeyUpdateNotes, v.Notes},
+	}
+	release := false
+	for _, it := range items {
+		if it.value == "" {
+			continue
+		}
+		norm, err := normalizeUpdateValue(it.key, it.value)
+		if err != nil {
+			return fmt.Errorf("policy set: %s %w", it.name, err)
+		}
+		if err := st.SetMeta(ctx, it.key, norm); err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "vkeyd: %s 已设置为 %s\n", strings.TrimPrefix(it.name, "--"), norm)
+		if it.key == store.MetaKeyUpdateVersionCode || it.key == store.MetaKeyUpdateSHA256 {
+			release = true
+		}
+	}
+	if release {
+		ts := time.Now().Unix()
+		if err := st.SetUpdatePublishedAt(ctx, ts); err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "vkeyd: update_published_at 已设置为 %d\n", ts)
+	}
+	return nil
+}
+
+// normalizeUpdateValue 按 meta 键校验并规范化单个更新信息取值。
+func normalizeUpdateValue(key, value string) (string, error) {
+	switch key {
+	case store.MetaKeyUpdateSource:
+		if value != store.UpdateSourceGitHub && value != store.UpdateSourceLocal {
+			return "", fmt.Errorf("必须是 %s 或 %s", store.UpdateSourceGitHub, store.UpdateSourceLocal)
+		}
+		return value, nil
+	case store.MetaKeyUpdateRepo:
+		parts := strings.Split(value, "/")
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" ||
+			strings.ContainsAny(value, " \t\r\n") {
+			return "", fmt.Errorf("必须是 owner/repo 形式，实际 %q", value)
+		}
+		return value, nil
+	case store.MetaKeyUpdateAsset:
+		if !validArtifactFileName(value) {
+			return "", fmt.Errorf("必须是单段文件名（字母数字与 . _ -），实际 %q", value)
+		}
+		return value, nil
+	case store.MetaKeyUpdateVersionCode, store.MetaKeyUpdateSize:
+		n, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || n < 0 {
+			return "", fmt.Errorf("必须是不小于 0 的整数，实际 %q", value)
+		}
+		return strconv.FormatInt(n, 10), nil
+	case store.MetaKeyUpdateSHA256:
+		if !isSHA256Hex(value) {
+			return "", fmt.Errorf("必须是 64 位十六进制，实际 %q", value)
+		}
+		return strings.ToLower(value), nil
+	default:
+		return value, nil
+	}
+}
+
+// validArtifactFileName 判断产物文件名能否安全拼进 /dl/ 与 GitHub 下载地址。
+func validArtifactFileName(name string) bool {
+	if name == "" || name == "." || name == ".." || strings.Contains(name, "..") {
+		return false
+	}
+	if strings.ContainsAny(name, "/\\ \t\r\n") {
+		return false
+	}
+	for _, c := range name {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9',
+			c == '.', c == '_', c == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// isSHA256Hex 判断取值是否为 64 位十六进制（大小写均可）。
+func isSHA256Hex(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for _, c := range s {
+		switch {
+		case c >= '0' && c <= '9', c >= 'a' && c <= 'f', c >= 'A' && c <= 'F':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// runUpdate 处理 `update show` 子命令：打印当前 Android 更新信息配置。
+//
+// stdout 为固定的 key=value 行（便于脚本解析），提示信息走 stderr。
+func runUpdate(args []string) error {
+	if len(args) == 0 || args[0] != "show" {
+		return errors.New("update: 用法 `vkeyd update show --db <path>`")
+	}
+	fs := flag.NewFlagSet("update show", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	dbPath := fs.String("db", "", "sqlite 数据库路径（必填）")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	if *dbPath == "" {
+		return errors.New("update show: 缺少 --db")
+	}
+	st, err := store.Open(*dbPath)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = st.Close() }()
+
+	info, err := st.UpdateInfo(context.Background())
+	if err != nil {
+		return err
+	}
+	fmt.Printf("source=%s\nrepo=%s\nasset=%s\nversion_code=%d\nversion_name=%s\nsha256=%s\nsize=%d\nnotes=%s\npublished_at=%d\nconfigured=%t\n",
+		info.Source, info.Repo, info.Asset, info.VersionCode, info.VersionName,
+		info.SHA256, info.Size, info.Notes, info.PublishedAt, info.Configured)
+	if !info.Configured {
+		fmt.Fprintln(os.Stderr, "vkeyd: 更新信息尚未配置完整（需要 version_code 与 sha256），GET /api/v1/update/android 返回 204")
 	}
 	return nil
 }
@@ -477,6 +660,10 @@ func usage(w *os.File) {
   vkeyd serve  --db <path> --listen :8080 [--domain <域名>] [--artifacts-dir <dir>] [--set-require-master-pw=true|false]
   vkeyd policy set --db <path> [--require-master-pw=<bool>] [--user-mode=single|admin]
                              [--max-items-per-user=<n>] [--max-bytes-per-user=<n|20MiB>] [--max-devices-per-user=<n>]
+                             [--update-source=github|local] [--update-repo=<owner/repo>] [--update-asset=<file>]
+                             [--update-version-code=<n>] [--update-version-name=<x.y.z>]
+                             [--update-sha256=<hex>] [--update-size=<n>] [--update-notes=<text>]
+  vkeyd update show --db <path>
    vkeyd user add <username> --db <path> [--ttl 30m] [--domain <域名>]
   vkeyd user list --db <path>
   vkeyd user disable|enable <username>|--id <id> --db <path>
@@ -488,6 +675,10 @@ func usage(w *os.File) {
   init   建库并创建账号，stdout 只打印一次 master_key（base32 无填充）
   serve  启动 HTTP 服务；TLS 由 nginx 终止
   policy 修改服务端策略（主密码、用户模式、每用户配额；-1 表示不限制）
+         亦用于配置 Android 更新信息（--update-*，只写库、不访问网络）；
+         写入 --update-version-code 或 --update-sha256 时同时刷新发布时间
+  update 查看 Android 更新信息配置（show）：stdout 为 key=value 行，
+         configured=false 时 GET /api/v1/update/android 返回 204
   user   多用户运维（仅 user_mode=admin 生效）：
          add     签发一次性开户码（默认 30 分钟、单次使用），stdout 为
                   username=/code=/code_id=/expires_at=/join_url= 五行，便于脚本解析；

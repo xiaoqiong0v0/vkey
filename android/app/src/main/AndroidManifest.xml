@@ -4,6 +4,8 @@
     <!-- 同步层需要访问 vkeyd；扫码需要相机 -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- 应用内更新：下载校验通过后拉起系统安装器 -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <uses-feature
         android:name="android.hardware.camera"
@@ -55,6 +57,17 @@
                 <data android:scheme="vkey" android:host="enroll" />
             </intent-filter>
         </activity>
+
+        <!-- 应用内更新：只暴露 cacheDir/updates/ 下的 APK 给系统安装器 -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.updates"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
 
 </manifest>

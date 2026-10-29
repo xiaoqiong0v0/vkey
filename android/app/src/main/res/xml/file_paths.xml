@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 更新包只从 cacheDir/updates/ 暴露给系统安装器（FileProvider）。 -->
+<paths>
+    <cache-path
+        name="updates"
+        path="updates/" />
+</paths>

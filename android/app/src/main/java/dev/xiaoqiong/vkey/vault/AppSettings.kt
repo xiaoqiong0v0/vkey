@@ -93,11 +93,22 @@ class AppSettings(context: Context) {
         get() = LanguageMode.fromStorage(sp.getString(KEY_LANGUAGE, null))
         set(value) = sp.edit().putString(KEY_LANGUAGE, value.storageValue).apply()
 
+    /**
+     * 最近一次更新检查的时间（毫秒时间戳，0 = 从未检查）。
+     *
+     * 用于启动静默检查的频率限制：距上次检查不足 24 小时则跳过。
+     * 手动检查同样写入，避免随后启动再查一次。
+     */
+    var lastUpdateCheckAt: Long
+        get() = sp.getLong(KEY_LAST_UPDATE_CHECK_AT, 0L)
+        set(value) = sp.edit().putLong(KEY_LAST_UPDATE_CHECK_AT, value).apply()
+
     private companion object {
         const val KEY_AUTO_LOCK = "auto_lock_on_resume"
         const val KEY_SERVER_URL = "server_url"
         const val KEY_THEME_MODE = "theme_mode"
         const val KEY_LANGUAGE = "language"
+        const val KEY_LAST_UPDATE_CHECK_AT = "last_update_check_at"
         /** 默认服务地址：空串（未配置）。发行版不内置任何生产域名。 */
         const val DEFAULT_SERVER_URL = ""
     }

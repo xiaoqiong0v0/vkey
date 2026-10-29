@@ -279,6 +279,32 @@
     <!-- ============ QR code (accessibility) ============ -->
     <string name="qr_code_content_description">QR code</string>
 
+    <!-- ============ In-app update ============ -->
+    <string name="update_check_title">Check for updates</string>
+    <string name="update_current_version">Current version %1$s (%2$d)</string>
+    <string name="update_checking">Checking for updates…</string>
+    <string name="update_up_to_date">You are on the latest version</string>
+    <string name="update_found">New version %1$s available</string>
+    <string name="update_check_failed">Check failed: %1$s</string>
+    <string name="update_banner_title">New version %1$s available</string>
+    <string name="action_view">View</string>
+    <string name="action_close">Close</string>
+    <string name="update_dialog_title">New version available</string>
+    <string name="update_dialog_version">New version: %1$s</string>
+    <string name="update_dialog_size">Download size: %1$s MB</string>
+    <string name="update_dialog_notes">Release notes</string>
+    <string name="update_dialog_notes_empty">(No release notes)</string>
+    <string name="action_download_install">Download and install</string>
+    <string name="action_later">Later</string>
+    <string name="update_downloading">Downloading: %1$d%%</string>
+    <string name="action_cancel_download">Cancel download</string>
+    <string name="update_download_failed">Download failed: %1$s</string>
+    <string name="update_verify_sha_failed">Verification failed: SHA-256 mismatch; downloaded file deleted</string>
+    <string name="update_verify_size_failed">Verification failed: file size mismatch; downloaded file deleted</string>
+    <string name="update_verify_signature_failed">Verification failed: signing certificate mismatch; downloaded file deleted</string>
+    <string name="update_need_install_permission">Allow \"Install unknown apps\" first, then tap \"Download and install\" again</string>
+    <string name="update_install_failed">Cannot start the installer: %1$s</string>
+
     <!-- ============ About page ============ -->
     <string name="about_title">About</string>
     <string name="about_version">%1$s (%2$d)</string>

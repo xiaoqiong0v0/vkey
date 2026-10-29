@@ -129,6 +129,11 @@ private enum class ConfirmKind { NONE, CLEAR_DEVICE, ENROLL }
  * @param onClose 关闭本页
  * @param canExportTotp 是否存在可导出的 2FA 条目（false 时「导出 2FA 配置」入口不显示）
  * @param onExportTotp 点击「导出 2FA 配置」（验证与分享由 Activity 负责）
+ * @param currentVersionName 当前版本名（如 `0.3.1`）
+ * @param currentVersionCode 当前 versionCode（如 `30100`）
+ * @param updateStatus 最近一次手动检查更新的结果文案；null = 尚未检查
+ * @param updateChecking 是否正在检查更新
+ * @param onCheckUpdate 点击「检查更新」；参数为设置页当前填写的服务端地址
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -155,6 +160,11 @@ fun SyncScreen(
     onClose: () -> Unit,
     canExportTotp: Boolean,
     onExportTotp: () -> Unit,
+    currentVersionName: String,
+    currentVersionCode: Int,
+    updateStatus: String?,
+    updateChecking: Boolean,
+    onCheckUpdate: (String) -> Unit,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -870,6 +880,49 @@ fun SyncScreen(
                                     ) { Text(stringResource(R.string.action_scan_input)) }
                                 }
                             }
+                        }
+                    }
+
+                    // ---------------- 检查更新（「关于」上方） ----------------
+                    Card(Modifier.fillMaxWidth()) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable(enabled = !updateChecking) { onCheckUpdate(url.trim()) }
+                                .padding(horizontal = 16.dp, vertical = 16.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    stringResource(R.string.update_check_title),
+                                    style = MaterialTheme.typography.bodyLarge,
+                                )
+                                Text(
+                                    stringResource(
+                                        R.string.update_current_version,
+                                        currentVersionName,
+                                        currentVersionCode,
+                                    ),
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                                val status = if (updateChecking) {
+                                    stringResource(R.string.update_checking)
+                                } else {
+                                    updateStatus
+                                }
+                                status?.let {
+                                    Text(
+                                        text = it,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.primary,
+                                    )
+                                }
+                            }
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
                         }
                     }
 

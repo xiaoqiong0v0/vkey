@@ -72,6 +72,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.xiaoqiong.vkey.i18n.LocaleSupport
+import dev.xiaoqiong.vkey.net.UpdateApi
+import dev.xiaoqiong.vkey.net.UpdateInfo
 import dev.xiaoqiong.vkey.sync.EnrollDeepLink
 import dev.xiaoqiong.vkey.sync.ItemJson
 import dev.xiaoqiong.vkey.sync.ItemsSync
@@ -81,6 +83,8 @@ import dev.xiaoqiong.vkey.sync.SyncStats
 import dev.xiaoqiong.vkey.totp.Totp
 import dev.xiaoqiong.vkey.ui.IssuerIcon
 import dev.xiaoqiong.vkey.ui.ScanMode
+import dev.xiaoqiong.vkey.ui.UpdateBanner
+import dev.xiaoqiong.vkey.ui.UpdateDialog
 import dev.xiaoqiong.vkey.ui.buildOtpauthUri
 import dev.xiaoqiong.vkey.ui.clearClipboard
 import dev.xiaoqiong.vkey.ui.copyToClipboard
@@ -88,6 +92,9 @@ import dev.xiaoqiong.vkey.ui.describeFailure
 import dev.xiaoqiong.vkey.ui.theme.VkeyTheme
 import dev.xiaoqiong.vkey.ui.vkeyPageAnimationsDisabled
 import dev.xiaoqiong.vkey.ui.vkeyPageTransition
+import dev.xiaoqiong.vkey.update.ApkVerifier
+import dev.xiaoqiong.vkey.update.UpdateInstaller
+import dev.xiaoqiong.vkey.update.UpdateVerifier
 import dev.xiaoqiong.vkey.vault.AppSettings
 import dev.xiaoqiong.vkey.vault.Base32
 import dev.xiaoqiong.vkey.vault.DeviceConfig
@@ -98,12 +105,17 @@ import dev.xiaoqiong.vkey.vault.VaultData
 import dev.xiaoqiong.vkey.vault.VaultStore
 import dev.xiaoqiong.vkey.vault.WebAuthnItem
 import dev.xiaoqiong.vkey.vault.withLegacyWebAuthnMigrated
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -125,6 +137,15 @@ private const val EXPORT_AUTH_GRACE_MS = 30_000L
 
 /** 导出内容的 MIME 类型（纯文本，交给系统分享面板，不上传任何地方）。 */
 private const val EXPORT_MIME_TYPE = "text/plain"
+
+/** 启动静默检查更新的最小间隔：24 小时（手动检查不受此限制）。 */
+private const val UPDATE_CHECK_INTERVAL_MS = 24L * 60L * 60L * 1000L
+
+/** 更新 APK 的缓存子目录（必须与 `res/xml/file_paths.xml` 的 cache-path 一致）。 */
+private const val UPDATE_CACHE_DIR = "updates"
+
+/** 更新流程日志 tag（`adb logcat -s vkey-update`）：只打版本号与校验结果。 */
+private const val UPDATE_LOG_TAG = "vkey-update"
 
 /**
  * 库内的顶层页面。
@@ -732,6 +753,203 @@ private fun VaultScreen(
     // 同步回调里要用最新的库内容，避免闭包捕获旧快照
     val latestVault by rememberUpdatedState(vault)
 
+    // ---------------- 应用内更新（检查 → 下载 → 校验 → 安装） ----------------
+    val updateSettings = remember { AppSettings(context) }
+    // 已发现的新版本（驱动主页提示条）；null = 暂无更新
+    var availableUpdate by remember { mutableStateOf<UpdateInfo?>(null) }
+    // 对话框展示的更新信息；null = 对话框关闭
+    var updateDialogInfo by remember { mutableStateOf<UpdateInfo?>(null) }
+    // 提示条是否已被用户关闭（仅本次会话）
+    var updateBannerDismissed by remember { mutableStateOf(false) }
+    var updateChecking by remember { mutableStateOf(false) }
+    // 设置页「检查更新」的结果文案（已是最新 / 发现新版本 / 检查失败）
+    var updateCheckStatus by remember { mutableStateOf<String?>(null) }
+    // 下载 / 校验 / 安装错误，就地显示在更新对话框里
+    var updateError by remember { mutableStateOf<String?>(null) }
+    var downloadProgress by remember { mutableStateOf<Float?>(null) }
+    var downloadJob by remember { mutableStateOf<Job?>(null) }
+
+    /** 当前版本（来自构建产物，不硬编码）。 */
+    val currentVersionName = BuildConfig.VERSION_NAME
+    val currentVersionCode = BuildConfig.VERSION_CODE
+    val currentVersionText = stringResource(
+        R.string.update_current_version,
+        currentVersionName,
+        currentVersionCode,
+    )
+
+    /** 更新检查的目标地址：已配对优先用配对时记录的地址，否则用设置里的地址。 */
+    val updateTargetAddress: () -> String = {
+        (latestVault.device?.server_url ?: serverUrl).trim()
+    }
+
+    /**
+     * 执行一次更新检查。
+     *
+     * @param address 手动检查时传入的地址（设置页当前输入）；空串回退到已保存地址
+     * @param manual true = 手动检查（写结果文案、发现新版本时弹对话框）；
+     *   false = 启动静默检查（失败不打扰用户）
+     */
+    val runUpdateCheck: (String, Boolean) -> Unit = { address, manual ->
+        val target = address.trim().ifBlank { updateTargetAddress() }
+        if (updateChecking) {
+            Unit
+        } else if (target.isBlank()) {
+            if (manual) {
+                updateCheckStatus = context.getString(
+                    R.string.update_check_failed,
+                    context.getString(R.string.err_enter_server_url),
+                )
+            }
+        } else if (manual) {
+            updateChecking = true
+            updateCheckStatus = context.getString(R.string.update_checking)
+            scope.launch {
+                try {
+                    val info = UpdateApi().check(target)
+                    updateSettings.lastUpdateCheckAt = System.currentTimeMillis()
+                    val newer = info?.takeIf {
+                        UpdateVerifier.isNewer(it.versionCode, currentVersionCode.toLong())
+                    }
+                    availableUpdate = newer
+                    updateBannerDismissed = false
+                    if (newer != null) {
+                        updateCheckStatus = context.getString(R.string.update_found, newer.versionName)
+                        updateError = null
+                        updateDialogInfo = newer
+                    } else {
+                        updateCheckStatus = context.getString(R.string.update_up_to_date)
+                    }
+                    Log.i(UPDATE_LOG_TAG, "check -> ${newer?.versionCode ?: "up_to_date"}")
+                } catch (t: Throwable) {
+                    val reason = describeFailure(context, t)
+                    updateCheckStatus = context.getString(R.string.update_check_failed, reason)
+                    Log.w(UPDATE_LOG_TAG, "check failed: $reason")
+                } finally {
+                    updateChecking = false
+                }
+            }
+        } else {
+            // 静默检查：不写页面状态，失败直接忽略
+            scope.launch {
+                runCatching { UpdateApi().check(target) }
+                    .onSuccess { info ->
+                        if (info != null &&
+                            UpdateVerifier.isNewer(info.versionCode, currentVersionCode.toLong())
+                        ) {
+                            availableUpdate = info
+                            updateBannerDismissed = false
+                            Log.i(UPDATE_LOG_TAG, "silent check -> ${info.versionCode}")
+                        }
+                    }
+                updateSettings.lastUpdateCheckAt = System.currentTimeMillis()
+            }
+        }
+    }
+
+    // 启动静默检查：距上次检查不足 24 小时则跳过（手动检查不受限）
+    LaunchedEffect(Unit) {
+        val elapsed = System.currentTimeMillis() - updateSettings.lastUpdateCheckAt
+        if (updateTargetAddress().isNotEmpty() && elapsed >= UPDATE_CHECK_INTERVAL_MS) {
+            runUpdateCheck("", false)
+        }
+    }
+
+    /**
+     * 下载并校验更新包：SHA-256 / 大小 / 签名全部通过才允许安装。
+     *
+     * 任一步失败都会删除文件、把原因留在对话框里，绝不弹出安装。
+     */
+    val startDownload: (UpdateInfo) -> Unit = { info ->
+        if (downloadJob?.isActive == true) {
+            Unit
+        } else {
+            updateError = null
+            downloadProgress = 0f
+            downloadJob = scope.launch {
+                val dir = File(context.cacheDir, UPDATE_CACHE_DIR)
+                val apk = File(dir, "${info.versionCode}.apk")
+                try {
+                    dir.mkdirs()
+                    // 已有完整文件（例如刚授权「安装未知应用」后重试）：跳过重复下载
+                    val cached = withContext(Dispatchers.IO) {
+                        apk.isFile && UpdateVerifier.matchesSha256(
+                            info.sha256,
+                            UpdateVerifier.fileSha256Hex(apk),
+                        )
+                    }
+                    if (cached) {
+                        downloadProgress = 1f
+                    } else {
+                        if (apk.exists()) apk.delete()
+                        UpdateApi().download(info.url, apk, info.size) { done, total ->
+                            if (total > 0L) {
+                                val fraction = (done.toFloat() / total.toFloat()).coerceIn(0f, 1f)
+                                // 按 1% 粒度刷新，避免每 64KB 都触发重组
+                                val shown = downloadProgress ?: 0f
+                                if (fraction >= 1f || fraction - shown >= 0.01f) {
+                                    downloadProgress = fraction
+                                }
+                            }
+                        }
+                    }
+                    val actualSha = withContext(Dispatchers.IO) { UpdateVerifier.fileSha256Hex(apk) }
+                    when {
+                        !UpdateVerifier.matchesSha256(info.sha256, actualSha) -> {
+                            apk.delete()
+                            updateError = context.getString(R.string.update_verify_sha_failed)
+                            Log.w(UPDATE_LOG_TAG, "verify ${info.versionCode}: sha256 mismatch")
+                        }
+                        info.size > 0L && apk.length() != info.size -> {
+                            apk.delete()
+                            updateError = context.getString(R.string.update_verify_size_failed)
+                            Log.w(UPDATE_LOG_TAG, "verify ${info.versionCode}: size mismatch")
+                        }
+                        !withContext(Dispatchers.IO) {
+                            ApkVerifier.hasTrustedSignature(context, apk)
+                        } -> {
+                            apk.delete()
+                            updateError = context.getString(R.string.update_verify_signature_failed)
+                            Log.w(UPDATE_LOG_TAG, "verify ${info.versionCode}: signature mismatch")
+                        }
+                        !UpdateInstaller.canRequestPackageInstall(context) -> {
+                            updateError = context.getString(R.string.update_need_install_permission)
+                            UpdateInstaller.openUnknownSourcesSettings(context)
+                        }
+                        else -> {
+                            Log.i(UPDATE_LOG_TAG, "verify ${info.versionCode}: sha256 ok, signature ok")
+                            runCatching { UpdateInstaller.install(context, apk) }
+                                .onSuccess {
+                                    updateDialogInfo = null
+                                    updateCheckStatus = null
+                                }
+                                .onFailure {
+                                    updateError = context.getString(
+                                        R.string.update_install_failed,
+                                        describeFailure(context, it),
+                                    )
+                                }
+                        }
+                    }
+                } catch (e: CancellationException) {
+                    // 取消下载：删掉半成品，把控制权交回调用方（不会被下面的 catch 吞掉）
+                    apk.delete()
+                    throw e
+                } catch (t: Throwable) {
+                    apk.delete()
+                    // 取消下载时 OkHttp 的中断会以 IOException 形式出现：原样抛出取消，不当作失败
+                    currentCoroutineContext().ensureActive()
+                    val reason = describeFailure(context, t)
+                    updateError = context.getString(R.string.update_download_failed, reason)
+                    Log.w(UPDATE_LOG_TAG, "download failed: $reason")
+                } finally {
+                    downloadProgress = null
+                    downloadJob = null
+                }
+            }
+        }
+    }
+
     /**
      * 执行一次条目同步：IO 上跑 [ItemsSync.sync]，把结果合并回最新库并落盘。
      *
@@ -907,6 +1125,21 @@ private fun VaultScreen(
                     },
                 ) { padding ->
                     Column(Modifier.fillMaxSize().padding(padding)) {
+                        // 发现新版本：主页顶部提示条（可关闭，不弹窗打断）
+                        val bannerUpdate = availableUpdate?.takeIf {
+                            !updateBannerDismissed &&
+                                UpdateVerifier.isNewer(it.versionCode, currentVersionCode.toLong())
+                        }
+                        if (bannerUpdate != null) {
+                            UpdateBanner(
+                                versionName = bannerUpdate.versionName,
+                                onView = {
+                                    updateError = null
+                                    updateDialogInfo = bannerUpdate
+                                },
+                                onDismiss = { updateBannerDismissed = true },
+                            )
+                        }
                         TabRow(selectedTabIndex = pagerState.currentPage) {
                             Tab(
                                 selected = pagerState.currentPage == PAGE_2FA,
@@ -1059,6 +1292,11 @@ private fun VaultScreen(
                 // 与列表页可见条目同口径：至少一条未删除的 totp 条目才显示导出入口
                 canExportTotp = vault.items.any { it.kind == ItemJson.KIND_TOTP && !it.deleted },
                 onExportTotp = onRequestExport,
+                currentVersionName = currentVersionName,
+                currentVersionCode = currentVersionCode,
+                updateStatus = updateCheckStatus,
+                updateChecking = updateChecking,
+                onCheckUpdate = { address -> runUpdateCheck(address, true) },
             )
 
             VkeyPage.ABOUT -> dev.xiaoqiong.vkey.ui.AboutScreen(
@@ -1174,6 +1412,25 @@ private fun VaultScreen(
             dismissButton = {
                 TextButton(onClick = onDismissExport) {
                     Text(stringResource(R.string.action_cancel))
+                }
+            },
+        )
+    }
+
+    // 更新对话框：版本 / 大小 / 说明 / 当前版本 + 下载进度与校验错误
+    updateDialogInfo?.let { info ->
+        UpdateDialog(
+            info = info,
+            currentVersion = currentVersionText,
+            progress = downloadProgress,
+            error = updateError,
+            onDownload = { startDownload(info) },
+            onCancelDownload = { downloadJob?.cancel() },
+            onDismiss = {
+                // 下载中不允许关闭（避免误触后任务无法观察）
+                if (downloadJob?.isActive != true) {
+                    updateDialogInfo = null
+                    updateError = null
                 }
             },
         )

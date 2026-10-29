@@ -82,6 +82,7 @@ func (s *Server) routes() http.Handler {
 
 	mux.HandleFunc("GET /api/v1/policy", s.handlePolicy)
 	mux.HandleFunc("GET /api/v1/health", s.handleHealth)
+	mux.HandleFunc("GET /api/v1/update/android", s.withRateLimit("update", s.handleUpdateAndroid))
 	mux.HandleFunc("POST /api/v1/auth/token", s.withRateLimit("auth", s.handleAuthToken))
 	mux.HandleFunc("POST /api/v1/auth/enroll", s.withRateLimit("enroll", s.handleEnroll))
 	mux.HandleFunc("POST /api/v1/auth/password", s.withAuth(s.handleSetPassword))
@@ -99,6 +100,7 @@ func (s *Server) routes() http.Handler {
 		"/api/v1/policy", "/api/v1/health", "/api/v1/auth/token",
 		"/api/v1/auth/enroll",
 		"/api/v1/auth/password",
+		"/api/v1/update/android",
 		"/api/v1/items", "/api/v1/devices", "/api/v1/devices/register", "/api/v1/devices/revoke",
 		"/api/v1/pair/new", "/api/v1/pair/claim",
 	} {
@@ -199,7 +201,7 @@ func allowedMethods(path string) string {
 	if path == "/api/v1/auth/password" {
 		return "POST, DELETE"
 	}
-	if path == "/api/v1/policy" || path == "/api/v1/health" {
+	if path == "/api/v1/policy" || path == "/api/v1/health" || path == "/api/v1/update/android" {
 		return "GET"
 	}
 	return "POST"

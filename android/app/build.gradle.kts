@@ -30,6 +30,8 @@ android {
 
     buildFeatures {
         compose = true
+        // 更新检查需要读取 BuildConfig.VERSION_CODE / VERSION_NAME
+        buildConfig = true
     }
 
     compileOptions {

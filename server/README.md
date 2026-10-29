@@ -13,7 +13,7 @@ vkey 的零知识同步服务端：只保存 verifier、设备公钥与**条目�
 ```
 server/
 ├── cmd/
-│   ├── vkeyd/          # 服务端 CLI（init / serve / policy set / user / purge）
+│   ├── vkeyd/          # 服务端 CLI（init / serve / policy set / update / user / purge）
 │   └── genvectors/     # 重新生成 shared/vectors/*.json
 ├── internal/
 │   ├── api/            # 路由、鉴权中间件、handlers、页面、限流
@@ -101,6 +101,64 @@ go run ./cmd/vkeyd policy set --db ../.tmp/scratch/vkey.db --max-items-per-user=
 
 超限响应统一 `409` + `error.code ∈ {quota_items, quota_bytes, quota_devices}`；
 条目超限整批回滚。日志只记 user_id/username/结果码，绝不记 code/verifier/token。
+
+## Android 更新信息（`GET /api/v1/update/android`）
+
+客户端启动时拉这个免鉴权端点决定是否提示升级（契约见 `../shared/protocol.md` §4.14）：
+
+- **未配置完整**（`version_code` 与 `sha256` 缺任一项）→ `204` 无正文，客户端视为「暂无更新」；
+- **配置完整** → `200` + `Cache-Control: public, max-age=300`；
+- 服务端**只读库、不访问 GitHub API**，`url` 由配置拼接：
+
+| `--update-source` | `url` |
+|---|---|
+| `github`（缺省） | `https://github.com/<repo>/releases/latest/download/<asset>` |
+| `local` | `<server_url>/dl/<asset>`（白名单仍由产物目录的 `SHA256SUMS` 决定） |
+
+缺省值：`source=github`、`repo=xiaoqiong0v0/vkey`、`asset=vkey-android.apk`。
+
+```bash
+# 查看当前配置（stdout 为固定 key=value 行；configured=false ⇒ 客户端看到 204）
+go run ./cmd/vkeyd update show --db ../.tmp/scratch/vkey.db
+
+# 单项修改：各项独立，未给出的保持不变
+go run ./cmd/vkeyd policy set --db ../.tmp/scratch/vkey.db --update-source=github
+go run ./cmd/vkeyd policy set --db ../.tmp/scratch/vkey.db --update-repo=xiaoqiong0v0/vkey --update-asset=vkey-android.apk
+
+# 发布新版本：写 version_code 与 sha256（两者同时写入才生效，并刷新 published_at）
+go run ./cmd/vkeyd policy set --db ../.tmp/scratch/vkey.db \
+  --update-version-code=30101 --update-version-name=0.3.2 \
+  --update-sha256=<APK 的 64 位 hex> --update-size=<APK 字节数> --update-notes='修复 xxx'
+```
+
+`--update-sha256` 必须是 64 位十六进制（CLI 统一转小写），`--update-repo` 必须是 `owner/repo`，
+`--update-asset` 必须是单段文件名（字母数字与 `. _ -`）；校验失败的非 0 退出并保留已写入的项。
+
+### 发布新版本时的操作清单
+
+1. 本地构建 APK（`android/`），确认 `versionCode` / `versionName` 已递增。
+2. 算摘要与体积：
+   ```bash
+   sha256sum vkey-android.apk                 # Windows: Get-FileHash -Algorithm SHA256 vkey-android.apk
+   stat -c %s vkey-android.apk                # Windows: (Get-Item vkey-android.apk).Length
+   ```
+3. 发布 GitHub Release（tag `vX.Y.Z`）：把 APK 作为资产上传，**文件名必须等于 `--update-asset`**
+   （默认 `vkey-android.apk`）——`releases/latest/download/<asset>` 靠它命中，文件名不符则客户端 404。
+   改走自托管时：把 APK 放进 `--artifacts-dir` 并更新同目录 `SHA256SUMS`，再把 `--update-source` 设为 `local`。
+4. 在服务端库上写配置（`version_code` 与 `sha256` 必须同一条命令或先后都写入，缺一项仍是 204）：
+   ```bash
+   ~/work/vkey/bin/vkeyd policy set --db ~/work/vkey/data/vkeyd.db \
+     --update-version-code=<n> --update-version-name=<x.y.z> \
+     --update-sha256=<APK sha256> --update-size=<字节数> --update-notes='<说明>'
+   ```
+5. 自检：
+   ```bash
+   ~/work/vkey/bin/vkeyd update show --db ~/work/vkey/data/vkeyd.db   # configured=true
+   curl -fsS https://<YOUR_DOMAIN>/api/v1/update/android             # 200 + 正确 url/sha256/version_code
+   ```
+   响应缓存 5 分钟（`max-age=300`），改完配置最多 5 分钟后客户端才看到新值。
+6. 回滚：把 `--update-version-code` / `--update-sha256` 改回旧值。注意 `releases/latest/download/`
+   永远指向最新 Release，旧 APK 已不在其中时需把旧资产补挂到新 Release，或改用 `local` 源。
 
 ## 测试
 

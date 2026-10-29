@@ -538,6 +538,52 @@ LWW（last-write-wins）规则：
 服务器地址来源：启动参数 `--domain` 优先；未设置时按请求 `Host` +
 `X-Forwarded-Proto` 推导。取值经字符白名单过滤后才注入脚本。
 
+### 4.14 `GET /api/v1/update/android`（免鉴权，限流 60 次/分钟/IP）
+
+Android 客户端启动时拉取，用来判断是否需要提示升级。响应 200：
+
+```json
+{
+  "version_code": 30101,
+  "version_name": "0.3.2",
+  "url": "https://github.com/xiaoqiong0v0/vkey/releases/latest/download/vkey-android.apk",
+  "sha256": "3f786850e387550fdab836ed7e6dc881de23001b2b0f4d1ad1e0c1e7b6d4b3f0",
+  "size": 8388608,
+  "notes": "首个公开版本",
+  "source": "github",
+  "published_at": 1761437400
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `version_code` | int | 是 | Android versionCode，客户端据此比较是否需要更新 |
+| `version_name` | string | 是 | 展示用版本号（如 `0.3.2`） |
+| `url` | string | 是 | APK 下载地址，拼接规则见下 |
+| `sha256` | string | 是 | APK 的 sha256（64 位小写 hex），客户端下载后**必须**校验 |
+| `size` | int | 是 | APK 字节数，`0` 表示未知 |
+| `notes` | string | 否 | 发布说明，空值时字段省略 |
+| `source` | string | 是 | `github` / `local` |
+| `published_at` | int | 是 | 发布时间（unix 秒），`0` 表示未知 |
+
+**204 语义**：`update.version_code` 与 `update.sha256` 任一未配置（含库中还没有任何
+`update.*` 键）时返回 **204 No Content、无正文**，客户端视为「暂无更新」，不得当作错误。
+
+`url` 的拼接规则（服务端只按配置拼接字符串，不做可达性检查）：
+
+| `source` | `url` |
+|---|---|
+| `github`（缺省） | `https://github.com/<repo>/releases/latest/download/<asset>`，`repo` 缺省 `xiaoqiong0v0/vkey`、`asset` 缺省 `vkey-android.apk` |
+| `local` | `<server_url>/dl/<asset>`，`server_url` 同 §4.13（`--domain` 优先，其次按请求推导）；`/dl/*` 的白名单仍由产物目录的 `SHA256SUMS` 决定 |
+
+- **不访问 GitHub API**：该端点只读本机 meta 表（键见 `server/internal/store/update.go`），
+  不发起任何出网请求，也不解压/校验 APK。GitHub Releases 未发布或资产名不符时 `url` 仍照常返回，
+  由客户端下载失败自行处理。
+- 响应头 `Cache-Control: public, max-age=300`（覆盖 `/api/*` 默认的 `no-store`），
+  即配置改动后客户端最多 5 分钟后才看到。
+- 非 `GET` → `405 method_not_allowed`（`Allow: GET`）；限流 60 次/分钟/IP，超限 429 `rate_limited`。
+- 配置入口：`vkeyd policy set --update-*`（写入）、`vkeyd update show`（查看），见 `server/README.md`。
+
 ---
 
 ## 5. 条目明文 JSON
@@ -728,6 +774,11 @@ vkeyd policy set --db <path> --require-master-pw=<bool>
     两个免鉴权 HTML/QR 端点。开户码在 query 中属一次性凭据：契约要求访问日志对 `/join*` 脱敏
     （只记路径）、页面/日志不得出现 master_key/verifier/token、无效情形统一 4xx 文案防枚举、
     且落地页只读校验不消费开户码（消费仍仅在 `POST /api/v1/auth/enroll`）。
+13. **新增 `GET /api/v1/update/android`**（见 §4.14）。原契约只有 `/dl/*` 静态分发 APK，没有
+    「客户端从哪得知最新版本、该比哪个版本号、怎么校验完整性」的接口，客户端只能硬编码下载地址。
+    裁定：新增免鉴权只读端点，服务端**只读 meta 表、不访问 GitHub API**（GitHub 与自托管两种
+    分发方式共用同一响应形状），`version_code` + `sha256` 缺任一项即 204，客户端据此判断
+    「暂无更新」。发布信息由运维 CLI 写入，故不引入新的写接口。
 
 ---
 

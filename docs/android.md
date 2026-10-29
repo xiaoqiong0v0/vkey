@@ -742,7 +742,7 @@ IDLE ──sync()──▶ PUSHING ──ok/无待推──▶ PULLING ──ok�
 
 ```
 vkey://pair?v=1
-  &server=https%3A%2F%2Fvkey.xiaoqiong0v0.cn
+  &server=https%3A%2F%2F<YOUR_DOMAIN>
   &code=<base32(32B)，52 字符，无分组>
   &code_id=<pair-...>
   &name=<urlencoded 设备名提示，可为空>
@@ -1167,7 +1167,7 @@ sha256sum app-release.apk
 ```bash
 # android/scripts/upload.sh  （或 server/deploy/upload-android.sh）
 # 默认 dry-run；--apply 才执行
-REMOTE="${REMOTE:-ecs-user@47.97.78.223}"
+REMOTE="${REMOTE:-<SSH_USER>@<SERVER_IP>}"
 REMOTE_DIR="${REMOTE_DIR:-/home/ecs-user/work/vkey}"
 ARTIFACTS="${ARTIFACTS:-$REMOTE_DIR/data/artifacts}"   # systemd WorkingDirectory=data → 默认 ./artifacts
 # 1) 校验 APK 签名与哈希

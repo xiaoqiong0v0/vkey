@@ -4,7 +4,7 @@
 # 布局：/home/ecs-user/work/vkey/{bin/vkeyd,data/vkeyd.db}（数据目录与二进制分离）。
 [Unit]
 Description=vkeyd - vkey zero-knowledge sync server
-Documentation=https://vkey.xiaoqiong0v0.cn/
+Documentation=https://<YOUR_DOMAIN>/
 After=network-online.target
 Wants=network-online.target
 
@@ -19,7 +19,7 @@ WorkingDirectory=/home/ecs-user/work/vkey/data
 # 库文件与 -wal/-shm 只允许属主读写。
 UMask=0077
 # 只监听回环，TLS 与公网入口由 nginx 承担（端口必须与 nginx 的 proxy_pass 一致）。
-ExecStart=/home/ecs-user/work/vkey/bin/vkeyd serve --db /home/ecs-user/work/vkey/data/vkeyd.db --listen 127.0.0.1:3150 --domain vkey.xiaoqiong0v0.cn
+ExecStart=/home/ecs-user/work/vkey/bin/vkeyd serve --db /home/ecs-user/work/vkey/data/vkeyd.db --listen 127.0.0.1:3150 --domain <YOUR_DOMAIN>
 Restart=on-failure
 RestartSec=3
 TimeoutStopSec=15

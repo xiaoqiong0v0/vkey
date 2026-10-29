@@ -300,6 +300,6 @@ vkey/
 | 代码布局 | 根下并列子目录 `server/ linux/ windows/ extension/ android/ shared/`，`docs/ spike/` 原位 |
 | 主密钥模型 | 32B 随机 `master_key`（见 §4.2），主密码为可选包裹层 |
 | 主密码策略 | 服务端下发，**默认不要求** |
-| 部署目标 | `ecs-user@47.97.78.223:~/work/vkey/`，nginx 反代 + certbot，域名 `vkey.xiaoqiong0v0.cn` |
+| 部署目标 | `<SSH_USER>@<SERVER_IP>:~/work/vkey/`，nginx 反代 + certbot，域名 `<YOUR_DOMAIN>` |
 | 机器 B 验收 | Fedora 上 podman 容器（`--device /dev/uhid`）跑完整 Chrome；Kali WSL 做同步/解密交叉验证（WSL2 内核 `CONFIG_UHID=n`，无法跑 HID 全链路） |
 | 工具链 | Go 1.27.3（mise，项目 `mise.toml` 钉版）；Rust 在 Fedora 原生构建 |

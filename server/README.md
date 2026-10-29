@@ -37,7 +37,7 @@ go run ./cmd/vkeyd init --db ../.tmp/scratch/vkey.db
 
 # 启动（只监听本机；生产由 nginx 反代，端口与生产保持一致用 3150）
 go run ./cmd/vkeyd serve --db ../.tmp/scratch/vkey.db --listen 127.0.0.1:3150 \
-  --domain vkey.xiaoqiong0v0.cn
+  --domain <YOUR_DOMAIN>
 
 # 改策略（主密码 / 用户模式 / 每用户配额，-1 表示不限制）
 go run ./cmd/vkeyd policy set --db ../.tmp/scratch/vkey.db --require-master-pw=true
@@ -152,7 +152,7 @@ bash linux/scripts/build-artifacts.sh     # 产出 dist/vkey-hid-linux-<arch>.ta
 
 ## 部署（ECS）
 
-目标与实际部署一致——主机 `ecs-user@47.97.78.223`，域名 `vkey.xiaoqiong0v0.cn`，
+目标与实际部署一致——主机 `<SSH_USER>@<SERVER_IP>`，域名 `<YOUR_DOMAIN>`，
 vkeyd 只监听 `127.0.0.1:3150`，TLS 由 nginx 终止（实测 nginx/1.18.0）：
 
 ```
@@ -160,8 +160,8 @@ vkeyd 只监听 `127.0.0.1:3150`，TLS 由 nginx 终止（实测 nginx/1.18.0）
 ├── bin/vkeyd          # 二进制（systemd 的 ExecStart）
 └── data/vkeyd.db      # sqlite 库（含 -wal/-shm；ReadWritePaths 只放开这个目录）
 /etc/systemd/system/vkeyd.service
-/etc/nginx/sites-available/vkey.xiaoqiong0v0.cn.conf
-/etc/nginx/sites-enabled/vkey.xiaoqiong0v0.cn.conf -> ../sites-available/...
+/etc/nginx/sites-available/<YOUR_DOMAIN>.conf
+/etc/nginx/sites-enabled/<YOUR_DOMAIN>.conf -> ../sites-available/...
 ```
 
 端口用 **3150**：本机 8080 已被其它服务（docker-proxy）占用。站点配置放
@@ -174,9 +174,9 @@ vkeyd 只监听 `127.0.0.1:3150`，TLS 由 nginx 终止（实测 nginx/1.18.0）
 1. 建目录、上传二进制并建库（**master_key 只显示一次**，立即存进离线密码管理器）：
 
    ```bash
-   ssh ecs-user@47.97.78.223 'mkdir -p ~/work/vkey/bin ~/work/vkey/data'
-   scp .tmp/scratch/vkeyd-linux-amd64 ecs-user@47.97.78.223:~/work/vkey/bin/vkeyd
-   ssh -t ecs-user@47.97.78.223 'chmod 755 ~/work/vkey/bin/vkeyd \
+   ssh <SSH_USER>@<SERVER_IP> 'mkdir -p ~/work/vkey/bin ~/work/vkey/data'
+   scp .tmp/scratch/vkeyd-linux-amd64 <SSH_USER>@<SERVER_IP>:~/work/vkey/bin/vkeyd
+   ssh -t <SSH_USER>@<SERVER_IP> 'chmod 755 ~/work/vkey/bin/vkeyd \
      && cd ~/work/vkey/data && ../bin/vkeyd init --db ~/work/vkey/data/vkeyd.db'
    ```
 
@@ -185,12 +185,12 @@ vkeyd 只监听 `127.0.0.1:3150`，TLS 由 nginx 终止（实测 nginx/1.18.0）
 2. 安装 systemd unit 与 nginx 配置（阶段 1：先把 443 块注释掉，只启用 80 块）：
 
    ```bash
-   scp server/deploy/vkeyd.service ecs-user@47.97.78.223:/tmp/vkeyd.service
-   scp server/deploy/nginx-vkey.conf ecs-user@47.97.78.223:/tmp/vkey-nginx.conf
-   ssh -t ecs-user@47.97.78.223 'sudo install -m 0644 /tmp/vkeyd.service /etc/systemd/system/vkeyd.service \
-     && sudo install -m 0644 /tmp/vkey-nginx.conf /etc/nginx/sites-available/vkey.xiaoqiong0v0.cn.conf \
-     && sudo ln -sfn /etc/nginx/sites-available/vkey.xiaoqiong0v0.cn.conf \
-        /etc/nginx/sites-enabled/vkey.xiaoqiong0v0.cn.conf \
+   scp server/deploy/vkeyd.service <SSH_USER>@<SERVER_IP>:/tmp/vkeyd.service
+   scp server/deploy/nginx-vkey.conf <SSH_USER>@<SERVER_IP>:/tmp/vkey-nginx.conf
+   ssh -t <SSH_USER>@<SERVER_IP> 'sudo install -m 0644 /tmp/vkeyd.service /etc/systemd/system/vkeyd.service \
+     && sudo install -m 0644 /tmp/vkey-nginx.conf /etc/nginx/sites-available/<YOUR_DOMAIN>.conf \
+     && sudo ln -sfn /etc/nginx/sites-available/<YOUR_DOMAIN>.conf \
+        /etc/nginx/sites-enabled/<YOUR_DOMAIN>.conf \
      && sudo systemctl daemon-reload && sudo systemctl enable --now vkeyd \
      && sudo nginx -t && sudo systemctl reload nginx'
    ```
@@ -198,7 +198,7 @@ vkeyd 只监听 `127.0.0.1:3150`，TLS 由 nginx 终止（实测 nginx/1.18.0）
 3. 阶段 2：申请证书（ACME webroot 是 `/var/www/html`），再放开 443 块并 reload：
 
    ```bash
-   sudo certbot certonly --webroot -w /var/www/html -d vkey.xiaoqiong0v0.cn
+   sudo certbot certonly --webroot -w /var/www/html -d <YOUR_DOMAIN>
    # 取消 443 块注释后：
    sudo nginx -t && sudo systemctl reload nginx
    ```
@@ -208,8 +208,8 @@ vkeyd 只监听 `127.0.0.1:3150`，TLS 由 nginx 终止（实测 nginx/1.18.0）
 4. 自检：
 
    ```bash
-   curl -fsS https://vkey.xiaoqiong0v0.cn/api/v1/health
-   curl -fsS https://vkey.xiaoqiong0v0.cn/api/v1/policy
+   curl -fsS https://<YOUR_DOMAIN>/api/v1/health
+   curl -fsS https://<YOUR_DOMAIN>/api/v1/policy
    ```
 
 ## 日常更新
@@ -281,7 +281,7 @@ vkeyd 只监听 `127.0.0.1:3150`，TLS 由 nginx 终止（实测 nginx/1.18.0）
     要交互就得申请 TTY：
 
     ```bash
-    ssh -t ecs-user@host 'cd ~/work/vkey && sudo -n ./bin/vkeyd purge --db ./data/vkeyd.db'
+    ssh -t <SSH_USER>@host 'cd ~/work/vkey && sudo -n ./bin/vkeyd purge --db ./data/vkeyd.db'
     ```
 
   - 只影响 `items` 表中 `deleted_at IS NOT NULL AND deleted_at != 0` 的行；

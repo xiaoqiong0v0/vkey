@@ -15,9 +15,9 @@
 #   6. `systemctl reload nginx` 后做健康检查
 #
 # 环境变量（均有与实际部署一致的默认值）：
-#   REMOTE      目标主机        默认 ecs-user@47.97.78.223
+#   REMOTE      目标主机        默认 <SSH_USER>@<SERVER_IP>
 #   REMOTE_DIR  远端根目录（须绝对路径）  默认 /home/ecs-user/work/vkey
-#   DOMAIN      域名            默认 vkey.xiaoqiong0v0.cn
+#   DOMAIN      域名            默认 <YOUR_DOMAIN>
 #   ARCH        目标架构        默认 amd64
 #   SERVICE     systemd 单元名  默认 vkeyd
 #   SITE        nginx 站点文件名 默认 <DOMAIN>.conf
@@ -28,9 +28,9 @@
 
 set -euo pipefail
 
-REMOTE="${REMOTE:-ecs-user@47.97.78.223}"
+REMOTE="${REMOTE:-<SSH_USER>@<SERVER_IP>}"
 REMOTE_DIR="${REMOTE_DIR:-/home/ecs-user/work/vkey}"
-DOMAIN="${DOMAIN:-vkey.xiaoqiong0v0.cn}"
+DOMAIN="${DOMAIN:-<YOUR_DOMAIN>}"
 ARCH="${ARCH:-amd64}"
 SERVICE="${SERVICE:-vkeyd}"
 SITE="${SITE:-${DOMAIN}.conf}"

@@ -133,7 +133,7 @@
     <string name="section_device_management">Device management</string>
     <string name="warn_server_changed">The address differs from the current pairing: switching servers requires pairing again.</string>
     <string name="label_device_name_for_repair">Device name (used when pairing again)</string>
-    <string name="action_clear_pairing">Disconnect (clear local device material)</string>
+    <string name="action_clear_pairing">Unlink account (keep local data)</string>
     <string name="section_login_master_key">Sign in with master_key</string>
     <string name="login_master_key_desc">Recovery code / master_key (52 characters). This device generates and stores its own device key.</string>
     <string name="action_login_with_master_key">Finish setup with master_key</string>

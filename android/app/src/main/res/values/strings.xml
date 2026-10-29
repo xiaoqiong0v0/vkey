@@ -134,7 +134,7 @@
     <string name="section_device_management">设备管理</string>
     <string name="warn_server_changed">填写的地址与当前配对不一致：更换服务器后需要重新配对。</string>
     <string name="label_device_name_for_repair">设备名（重新配对时使用）</string>
-    <string name="action_clear_pairing">断开配对（清除本机设备材料）</string>
+    <string name="action_clear_pairing">解除账户绑定（保留本地数据）</string>
     <string name="section_login_master_key">用 master_key 登录</string>
     <string name="login_master_key_desc">恢复码 / master_key（52 位）。本机会生成并保存自己的设备密钥。</string>
     <string name="action_login_with_master_key">用 master_key 完成配置</string>

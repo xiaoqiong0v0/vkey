@@ -145,10 +145,10 @@
     <string name="action_claim_and_configure">领取并完成配置</string>
     <string name="action_scan_input">扫码输入</string>
     <string name="label_device_name">设备名</string>
-    <string name="dialog_disconnect_title">断开配对？</string>
-    <string name="dialog_disconnect_text">只清除本机的 token 与设备密钥，不影响服务端条目和其它设备。之后可重新配对。</string>
-    <string name="info_disconnected">已断开配对</string>
-    <string name="action_disconnect">断开</string>
+    <string name="dialog_disconnect_title">解除与账号的绑定？</string>
+    <string name="dialog_disconnect_text">解除本机与该账号的绑定：删除本机的设备凭证和 token。\n\n保留：本地条目（仍可离线查看）、master_key、服务端数据、其它设备。\n\n之后可以用配对码或 master_key 重新绑定；要彻底清空本机数据，请另行删除应用数据。</string>
+    <string name="info_disconnected">已解除绑定，本地条目已保留</string>
+    <string name="action_disconnect">解除绑定</string>
     <string name="busy_logging_in">正在用主密钥登录…</string>
     <string name="info_logged_in">已登录：%1$s</string>
     <string name="busy_claiming_pair_code">正在领取配对码…</string>

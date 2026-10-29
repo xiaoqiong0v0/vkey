@@ -144,10 +144,10 @@
     <string name="action_claim_and_configure">Claim and finish setup</string>
     <string name="action_scan_input">Scan input</string>
     <string name="label_device_name">Device name</string>
-    <string name="dialog_disconnect_title">Disconnect pairing?</string>
-    <string name="dialog_disconnect_text">Only the local token and device key are removed; server entries and other devices are unaffected. You can pair again later.</string>
-    <string name="info_disconnected">Pairing disconnected</string>
-    <string name="action_disconnect">Disconnect</string>
+    <string name="dialog_disconnect_title">Unlink this device?</string>
+    <string name="dialog_disconnect_text">Removes the device credentials and token from this account binding.\n\nKept: local entries (still viewable offline), master_key, server data, and other devices.\n\nYou can re-link later with a pairing code or master_key. To erase all local data, clear the app data instead.</string>
+    <string name="info_disconnected">Unlinked; local entries kept</string>
+    <string name="action_disconnect">Unlink</string>
     <string name="busy_logging_in">Signing in with master key…</string>
     <string name="info_logged_in">Signed in: %1$s</string>
     <string name="busy_claiming_pair_code">Claiming pairing code…</string>

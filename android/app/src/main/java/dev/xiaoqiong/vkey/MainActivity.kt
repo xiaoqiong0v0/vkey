@@ -43,6 +43,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
@@ -82,13 +83,16 @@ import dev.xiaoqiong.vkey.sync.SyncManager
 import dev.xiaoqiong.vkey.sync.SyncStats
 import dev.xiaoqiong.vkey.totp.Totp
 import dev.xiaoqiong.vkey.ui.IssuerIcon
+import dev.xiaoqiong.vkey.ui.OnboardingState
 import dev.xiaoqiong.vkey.ui.ScanMode
+import dev.xiaoqiong.vkey.ui.SettingsTab
 import dev.xiaoqiong.vkey.ui.UpdateBanner
 import dev.xiaoqiong.vkey.ui.UpdateDialog
 import dev.xiaoqiong.vkey.ui.buildOtpauthUri
 import dev.xiaoqiong.vkey.ui.clearClipboard
 import dev.xiaoqiong.vkey.ui.copyToClipboard
 import dev.xiaoqiong.vkey.ui.describeFailure
+import dev.xiaoqiong.vkey.ui.onboardingState
 import dev.xiaoqiong.vkey.ui.theme.VkeyTheme
 import dev.xiaoqiong.vkey.ui.vkeyPageAnimationsDisabled
 import dev.xiaoqiong.vkey.ui.vkeyPageTransition
@@ -147,6 +151,9 @@ private const val UPDATE_CACHE_DIR = "updates"
 /** 更新流程日志 tag（`adb logcat -s vkey-update`）：只打版本号与校验结果。 */
 private const val UPDATE_LOG_TAG = "vkey-update"
 
+/** 首启流程日志 tag（`adb logcat -s vkey-onboarding`）：只打状态名，不含任何密钥。 */
+private const val ONBOARDING_LOG_TAG = "vkey-onboarding"
+
 /**
  * 库内的顶层页面。
  *
@@ -159,7 +166,8 @@ private enum class VkeyPage(val depth: Int) {
     HOME(0),
     SYNC(1),
     SCAN(1),
-    IMPORT(1),
+    /** 导入页可从主页 FAB 或设置·数据进入，退回到来时的那一页，层级因此与「关于」同深。 */
+    IMPORT(2),
     ABOUT(2),
 }
 
@@ -199,6 +207,29 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
     /** 配对码预填（深链带来的配对码，进「设置」页时填进输入框）。 */
     private val syncPrefillState = mutableStateOf("")
 
+    /**
+     * 本次运行是否点了首启的「我已有 master_key / 配对码」。
+     *
+     * 只影响本次运行：跳过**不建库**，因此主页用 [guestVault] 兜空态；
+     * 下次冷启动若仍未配置，二选一页会照常出现（见 `ui.onboardingState`）。
+     */
+    private val onboardingSkippedThisRun = mutableStateOf(false)
+
+    /**
+     * 访客态占位库：首启选了「已有配置」但还没接入时给主页用的空库。
+     *
+     * **只在内存里**：`master_key` 为空串，任何写入都会被 [persistable] 拦下，绝不落盘。
+     */
+    private val guestVault = VaultData(master_key = "")
+
+    /**
+     * 设置页当前分类。
+     *
+     * 由 Activity 持有而不是组合内 `remember`：切页面（设置 ↔ 主页 / 导入）后仍记得
+     * 上次停留的分类，进程内有效。首启跳过时由 [onSkipOnboarding] 置为「账号」。
+     */
+    private val settingsTabState = mutableStateOf(SettingsTab.ACCOUNT)
+
     /** 系统验证进行中，避免重复拉起。 */
     private var authInFlight = false
 
@@ -234,6 +265,16 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
         if (migrated != null && migrated != loaded) store.write(migrated)
         vault.value = migrated
         locked.value = vault.value != null
+        // 首启页面决策：未配置（无库）时永远是「创建 / 我已配置」二选一；跳过不建库，故下次仍会再问
+        val startupState = onboardingState(
+            vaultLoaded = vault.value != null,
+            onboardingSkipped = settings.onboardingSkipped,
+        )
+        Log.i(
+            ONBOARDING_LOG_TAG,
+            "startup state=${startupState.name} showChoice=${startupState.needsSetupChoice} " +
+                "vault=${vault.value != null} skipped=${settings.onboardingSkipped}",
+        )
         handleDeepLink(intent)
 
         setContent {
@@ -242,11 +283,14 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
             var language by remember { mutableStateOf(settings.language) }
             VkeyTheme(mode = themeMode) {
                 VkeyApp(
-                    vault = vault.value,
-                    locked = locked.value,
+                    // 访客态（首启跳过且还没接入）用空库兜主页；不落盘、不生成任何密钥
+                    vault = vault.value
+                        ?: guestVault.takeIf { onboardingSkippedThisRun.value },                    locked = locked.value,
                     lockMessage = lockMessage.value,
                     canRetry = canRetry.value,
                     onRetryLock = { showSystemAuth() },
+                    onboardingSkipped = startupState == OnboardingState.SKIPPED_UNCONFIGURED,
+                    onSkipOnboarding = { skipOnboarding() },
                     onCreate = { data ->
                         vault.value = data
                         locked.value = false
@@ -254,20 +298,29 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                     onUnlock = { locked.value = false },
                     onLock = { locked.value = true },
                     onPersist = { data ->
-                        vault.value = data
-                        store.write(data)
+                        if (!persistable(data)) {
+                            Toast.makeText(this, getString(R.string.err_vault_not_configured), Toast.LENGTH_LONG)
+                                .show()
+                        } else {
+                            vault.value = data
+                            store.write(data)
+                        }
                     },
                     onPersistVerified = { data ->
-                        // 配置类写入专用：落盘 + 读回比对 device_id，校验通过才提交内存状态；
-                        // 失败返回错误文案（由 UI 显式展示，绝不静默）
-                        runCatching { store.writeAndVerify(data) }
-                            .onSuccess { vault.value = data }
-                            .fold(
-                                onSuccess = { null },
-                                onFailure = {
-                                    getString(R.string.err_vault_save_failed, describeFailure(this, it))
-                                },
-                            )
+                        if (!persistable(data)) {
+                            getString(R.string.err_vault_not_configured)
+                        } else {
+                            // 配置类写入专用：落盘 + 读回比对 device_id，校验通过才提交内存状态；
+                            // 失败返回错误文案（由 UI 显式展示，绝不静默）
+                            runCatching { store.writeAndVerify(data) }
+                                .onSuccess { vault.value = data }
+                                .fold(
+                                    onSuccess = { null },
+                                    onFailure = {
+                                        getString(R.string.err_vault_save_failed, describeFailure(this, it))
+                                    },
+                                )
+                        }
                     },
                     autoLockOnResume = settings.autoLockOnResume,
                     onAutoLockChange = { settings.autoLockOnResume = it },
@@ -290,6 +343,7 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                     pendingEnroll = pendingEnroll.value,
                     onApplyEnrollLink = { link -> applyEnrollLink(link, fromOnNewIntent = false) },
                     topPageState = topPageState,
+                    settingsTabState = settingsTabState,
                     enrollPrefillState = enrollPrefillState,
                     syncPrefillState = syncPrefillState,
                     onPendingHandled = {
@@ -395,6 +449,33 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
             "enroll link applied (fromOnNewIntent=$fromOnNewIntent, codeLength=${link.code.length})",
         )
     }
+
+    /**
+     * 首启选「我已有 master_key / 配对码」：**不建库**，进主页空态并打开设置·账号。
+     *
+     * 只写偏好 `onboarding_skipped`（记录用；下次未配置时仍会再次询问），
+     * 主密钥 / 设备材料一律不生成、不落盘。
+     */
+    private fun skipOnboarding() {
+        settings.onboardingSkipped = true
+        onboardingSkippedThisRun.value = true
+        settingsTabState.value = SettingsTab.ACCOUNT
+        syncPrefillState.value = ""
+        enrollPrefillState.value = null
+        topPageState.value = VkeyPage.SYNC
+        Log.i(ONBOARDING_LOG_TAG, "skipped: no vault created, opening settings/account")
+    }
+
+    /**
+     * 是否允许把 [data] 落盘。
+     *
+     * 拦截访客态（首启跳过、未接入账号）产生的写入：空主密钥的库一旦落盘就再也解不开，
+     * 也绝不该凭空生成密钥。正常建库 / 登录 / 配对 / 开户拿到的 master_key 都不为空，因此不受影响。
+     *
+     * @param data 待写入的库内容
+     * @return true 表示可以落盘
+     */
+    private fun persistable(data: VaultData): Boolean = data.master_key.isNotBlank()
 
     override fun onStop() {
         // 默认不锁：用户已在系统层解锁过；需要在设置里打开「回前台重新解锁」
@@ -542,6 +623,14 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
     }
 }
 
+/**
+ * 应用根组合：首启二选一 → 解锁页 → 主页（库内页面）。
+ *
+ * @param vault 当前库；null = 本机还没有库（首启二选一页）
+ * @param onboardingSkipped 上次是否选过「我已有 master_key / 配对码」（只影响首启页提示文案）
+ * @param onSkipOnboarding 首启选「我已有 master_key / 配对码」（不建库，进主页空态 + 设置·账号）
+ * @param settingsTabState 设置页分类（Activity 持有，进程内记住）
+ */
 @Composable
 private fun VkeyApp(
     vault: VaultData?,
@@ -549,6 +638,8 @@ private fun VkeyApp(
     lockMessage: String,
     canRetry: Boolean,
     onRetryLock: () -> Unit,
+    onboardingSkipped: Boolean,
+    onSkipOnboarding: () -> Unit,
     onCreate: (VaultData) -> Unit,
     onUnlock: () -> Unit,
     onLock: () -> Unit,
@@ -567,6 +658,7 @@ private fun VkeyApp(
     pendingEnroll: EnrollDeepLink?,
     onApplyEnrollLink: (EnrollDeepLink) -> Unit,
     topPageState: MutableState<VkeyPage>,
+    settingsTabState: MutableState<SettingsTab>,
     enrollPrefillState: MutableState<EnrollDeepLink?>,
     syncPrefillState: MutableState<String>,
     onPendingHandled: () -> Unit,
@@ -576,7 +668,11 @@ private fun VkeyApp(
     onDismissExport: () -> Unit,
 ) {
     when {
-        vault == null -> SetupScreen(onCreate = onCreate)
+        vault == null -> SetupScreen(
+            onboardingSkipped = onboardingSkipped,
+            onCreate = onCreate,
+            onSkip = onSkipOnboarding,
+        )
         locked -> LockScreen(message = lockMessage, canRetry = canRetry, onRetry = onRetryLock)
         else -> VaultScreen(
             vault = vault,
@@ -596,6 +692,7 @@ private fun VkeyApp(
             pendingEnroll = pendingEnroll,
             onApplyEnrollLink = onApplyEnrollLink,
             topPageState = topPageState,
+            settingsTabState = settingsTabState,
             enrollPrefillState = enrollPrefillState,
             syncPrefillState = syncPrefillState,
             onPendingHandled = onPendingHandled,
@@ -607,9 +704,100 @@ private fun VkeyApp(
     }
 }
 
-/** 首次引导：生成主密钥 → 强制展示并确认已保存恢复码。 */
+/**
+ * 首次引导：二选一 —— 创建新的恢复码（走原建库流程）或「我已有 master_key / 配对码」（不建库）。
+ *
+ * 未配置前每次启动都会回到这里：跳过既不生成主密钥也不写库，所以 `onboardingSkipped`
+ * 只影响提示文案，不抑制本页（判定见 `ui.onboardingState`）。
+ *
+ * @param onboardingSkipped 上次是否选过跳过（用于追加一行「上次已跳过」提示）
+ * @param onCreate 建库成功回调（携带新库）
+ * @param onSkip 选择「我已有…」：由 Activity 记偏好并跳到设置·账号
+ */
 @Composable
-private fun SetupScreen(onCreate: (VaultData) -> Unit) {
+private fun SetupScreen(
+    onboardingSkipped: Boolean,
+    onCreate: (VaultData) -> Unit,
+    onSkip: () -> Unit,
+) {
+    val context = LocalContext.current
+    // false = 二选一页；true = 建库表单（生成恢复码 → 确认已保存）
+    var creating by remember { mutableStateOf(false) }
+    AnimatedContent(
+        targetState = creating,
+        modifier = Modifier.fillMaxSize(),
+        transitionSpec = {
+            vkeyPageTransition(
+                forward = targetState,
+                animated = !vkeyPageAnimationsDisabled(context),
+            )
+        },
+        label = "vkey-setup",
+    ) { inCreation ->
+        if (inCreation) {
+            CreateVaultForm(onCreate = onCreate, onCancel = { creating = false })
+        } else {
+            SetupChoice(
+                onboardingSkipped = onboardingSkipped,
+                onStartCreate = { creating = true },
+                onSkip = onSkip,
+            )
+        }
+    }
+}
+
+/**
+ * 首启二选一页：主按钮创建新恢复码，次按钮「我已有 master_key / 配对码」（不建库）。
+ *
+ * @param onboardingSkipped 上次是否选过跳过（true 时追加提示）
+ * @param onStartCreate 点击「创建新的恢复码」
+ * @param onSkip 点击「我已有 master_key / 配对码」
+ */
+@Composable
+private fun SetupChoice(
+    onboardingSkipped: Boolean,
+    onStartCreate: () -> Unit,
+    onSkip: () -> Unit,
+) {
+    Column(
+        modifier = Modifier.fillMaxSize().padding(24.dp),
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Text(stringResource(R.string.setup_choice_title), style = MaterialTheme.typography.headlineSmall)
+        Spacer(Modifier.height(8.dp))
+        Text(
+            stringResource(R.string.setup_choice_desc),
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        if (onboardingSkipped) {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                stringResource(R.string.setup_choice_prev_skipped),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Spacer(Modifier.height(24.dp))
+        Button(
+            onClick = onStartCreate,
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text(stringResource(R.string.setup_choice_create)) }
+        Spacer(Modifier.height(8.dp))
+        OutlinedButton(
+            onClick = onSkip,
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text(stringResource(R.string.setup_choice_skip)) }
+    }
+}
+
+/**
+ * 建库表单：生成主密钥 → 展示并确认已保存恢复码 → 建库。
+ *
+ * @param onCreate 建库成功回调（携带新库）
+ * @param onCancel 返回二选一页（未写任何内容）
+ */
+@Composable
+private fun CreateVaultForm(onCreate: (VaultData) -> Unit, onCancel: () -> Unit) {
     val context = LocalContext.current
     val store = remember { VaultStore(context.filesDir) }
     val recoveryCode = remember { store.generateMasterKey() }
@@ -653,6 +841,9 @@ private fun SetupScreen(onCreate: (VaultData) -> Unit) {
             enabled = saved,
             modifier = Modifier.fillMaxWidth(),
         ) { Text(stringResource(R.string.action_continue)) }
+        TextButton(onClick = onCancel, modifier = Modifier.fillMaxWidth()) {
+            Text(stringResource(R.string.action_back))
+        }
     }
 }
 
@@ -706,6 +897,7 @@ private fun VaultScreen(
     pendingEnroll: EnrollDeepLink?,
     onApplyEnrollLink: (EnrollDeepLink) -> Unit,
     topPageState: MutableState<VkeyPage>,
+    settingsTabState: MutableState<SettingsTab>,
     enrollPrefillState: MutableState<EnrollDeepLink?>,
     syncPrefillState: MutableState<String>,
     onPendingHandled: () -> Unit,
@@ -720,6 +912,8 @@ private fun VaultScreen(
     var fabExpanded by remember { mutableStateOf(false) }
     // 当前顶层页面：状态由 Activity 持有（深链在组合外直接跳转），转场方向按 VkeyPage.depth 判定
     var topPage by topPageState
+    // 导入页的「返回目标」：主页 FAB 进 → 回主页；设置·数据进 → 回设置
+    var importBackTarget by remember { mutableStateOf(VkeyPage.HOME) }
     // 待确认的删除 / 吊销目标：null = 没有弹窗（所有删除都必须二次确认）
     var pendingDelete by remember { mutableStateOf<TotpItem?>(null) }
     var pendingRevoke by remember { mutableStateOf<WebAuthnItem?>(null) }
@@ -1233,6 +1427,7 @@ private fun VaultScreen(
                                     label = stringResource(R.string.fab_import_config),
                                     onClick = {
                                         fabExpanded = false
+                                        importBackTarget = VkeyPage.HOME
                                         topPage = VkeyPage.IMPORT
                                     },
                                 )
@@ -1297,14 +1492,20 @@ private fun VaultScreen(
                 updateStatus = updateCheckStatus,
                 updateChecking = updateChecking,
                 onCheckUpdate = { address -> runUpdateCheck(address, true) },
+                settingsTabState = settingsTabState,
+                // 设置·数据 → 导入页；关闭时回到设置（保留上次停留的分类）
+                onOpenImport = {
+                    importBackTarget = VkeyPage.SYNC
+                    topPage = VkeyPage.IMPORT
+                },
             )
 
             VkeyPage.ABOUT -> dev.xiaoqiong.vkey.ui.AboutScreen(
                 onClose = { topPage = VkeyPage.SYNC },
             )
 
-            // 主页 FAB：从 otpauth 文本（选文件 / 粘贴）批量导入 2FA 条目。
-            // 落盘走 writeAndVerify：失败回传文案在页内展示，成功才 Toast + 回列表。
+            // 主页 FAB / 设置·数据：从 otpauth 文本（选文件 / 粘贴）批量导入 2FA 条目。
+            // 落盘走 writeAndVerify：失败回传文案在页内展示，成功才 Toast + 回到来源页。
             VkeyPage.IMPORT -> dev.xiaoqiong.vkey.ui.ImportScreen(
                 existing = vault.items,
                 onImport = { items ->
@@ -1312,7 +1513,7 @@ private fun VaultScreen(
                     val base = latestVault
                     onPersistVerified(base.copy(items = base.items + items))
                 },
-                onClose = { topPage = VkeyPage.HOME },
+                onClose = { topPage = importBackTarget },
             )
 
             // 主页 FAB：添加 2FA 条目的入口，只接受 otpauth:// 二维码

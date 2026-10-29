@@ -26,6 +26,13 @@
     <string name="setup_saved_check">我已把恢复码保存到安全的地方</string>
     <string name="action_continue">进入</string>
 
+    <!-- 首启二选一：创建新的恢复码 / 我已有 master_key 或配对码 -->
+    <string name="setup_choice_title">开始使用 vkey</string>
+    <string name="setup_choice_desc">跳过不会创建新密钥。之后可以在「设置 → 账号」里输入 master_key 或配对码接入。</string>
+    <string name="setup_choice_prev_skipped">上次已跳过：本机仍未接入任何账号。</string>
+    <string name="setup_choice_create">创建新的恢复码</string>
+    <string name="setup_choice_skip">我已有 master_key / 配对码</string>
+
     <!-- ============ 深链提示 ============ -->
     <string name="toast_server_set">服务器地址已设置：%1$s</string>
     <string name="toast_pair_code_detected">已识别配对码，请在「同步配置」里领取</string>
@@ -105,6 +112,11 @@
     <string name="title_settings">设置</string>
     <string name="settings_auto_lock_title">回到前台时重新解锁</string>
     <string name="settings_auto_lock_desc">关闭时：从后台回来直接进入（系统已解锁过）</string>
+    <!-- 分组导航：每组一个 tab，只显示该组的项 -->
+    <string name="settings_tab_account">账号</string>
+    <string name="settings_tab_local">本机</string>
+    <string name="settings_tab_appearance">外观</string>
+    <string name="settings_tab_data">数据</string>
 
     <!-- ============ 导出 2FA 配置（otpauth 文本 + 系统分享） ============ -->
     <string name="export_totp_title">导出 2FA 配置</string>
@@ -118,6 +130,7 @@
     <!-- ============ 导入 2FA 配置（otpauth 文本：选文件 / 粘贴） ============ -->
     <string name="fab_import_config">导入配置</string>
     <string name="import_title">导入 2FA 配置</string>
+    <string name="import_subtitle">从 otpauth 文本批量导入（选文件或粘贴）</string>
     <string name="import_desc">支持 otpauth://totp/ 文本：每行一条，空行与 # 开头的注释会被忽略。</string>
     <string name="import_source_file">选择文件</string>
     <string name="import_source_paste">粘贴文本</string>
@@ -136,6 +149,7 @@
 
     <!-- ============ 同步配置 ============ -->
     <string name="status_not_configured">未配置</string>
+    <string name="err_vault_not_configured">尚未接入账号：请先在「设置 → 账号」输入 master_key 或配对码</string>
     <string name="status_logged_in">已登录：%1$s</string>
     <string name="sync_configure_hint">输入 master_key 或配对码完成配置；也可以先扫服务端二维码自动填好地址。</string>
     <string name="label_device">设备：%1$s</string>

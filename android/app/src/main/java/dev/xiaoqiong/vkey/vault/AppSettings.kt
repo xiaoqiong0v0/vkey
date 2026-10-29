@@ -94,6 +94,16 @@ class AppSettings(context: Context) {
         set(value) = sp.edit().putString(KEY_LANGUAGE, value.storageValue).apply()
 
     /**
+     * 首启二选一页是否选过「我已有 master_key / 配对码」（持久化记录）。
+     *
+     * 跳过**不会**创建库、也不会生成主密钥：因此下次启动只要仍未配置
+     * （没有 vault / master_key），二选一页依旧会出现。该标记只用于提示与取证。
+     */
+    var onboardingSkipped: Boolean
+        get() = sp.getBoolean(KEY_ONBOARDING_SKIPPED, false)
+        set(value) = sp.edit().putBoolean(KEY_ONBOARDING_SKIPPED, value).apply()
+
+    /**
      * 最近一次更新检查的时间（毫秒时间戳，0 = 从未检查）。
      *
      * 用于启动静默检查的频率限制：距上次检查不足 24 小时则跳过。
@@ -109,6 +119,7 @@ class AppSettings(context: Context) {
         const val KEY_THEME_MODE = "theme_mode"
         const val KEY_LANGUAGE = "language"
         const val KEY_LAST_UPDATE_CHECK_AT = "last_update_check_at"
+        const val KEY_ONBOARDING_SKIPPED = "onboarding_skipped"
         /** 默认服务地址：空串（未配置）。发行版不内置任何生产域名。 */
         const val DEFAULT_SERVER_URL = ""
     }

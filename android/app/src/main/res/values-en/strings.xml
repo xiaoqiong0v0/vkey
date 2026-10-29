@@ -25,6 +25,13 @@
     <string name="setup_saved_check">I have saved the recovery code somewhere safe</string>
     <string name="action_continue">Continue</string>
 
+    <!-- Onboarding choice: create a new recovery code / I already have a master_key -->
+    <string name="setup_choice_title">Get started with vkey</string>
+    <string name="setup_choice_desc">Skipping creates no new key. You can enter a master_key or pairing code later under Settings → Account.</string>
+    <string name="setup_choice_prev_skipped">Skipped last time: this device is still not connected to an account.</string>
+    <string name="setup_choice_create">Create a new recovery code</string>
+    <string name="setup_choice_skip">I already have a master_key / pairing code</string>
+
     <!-- ============ Deep links ============ -->
     <string name="toast_server_set">Server address set: %1$s</string>
     <string name="toast_pair_code_detected">Pairing code detected. Claim it under Sync settings</string>
@@ -104,6 +111,11 @@
     <string name="title_settings">Settings</string>
     <string name="settings_auto_lock_title">Require unlock when returning to foreground</string>
     <string name="settings_auto_lock_desc">When off: returning from background goes straight in (system already unlocked)</string>
+    <!-- Grouped navigation: one tab per group, only that group's items are shown -->
+    <string name="settings_tab_account">Account</string>
+    <string name="settings_tab_local">Device</string>
+    <string name="settings_tab_appearance">Appearance</string>
+    <string name="settings_tab_data">Data</string>
 
     <!-- ============ Export 2FA setup (otpauth text + system share sheet) ============ -->
     <string name="export_totp_title">Export 2FA setup</string>
@@ -117,6 +129,7 @@
     <!-- ============ Import 2FA setup (otpauth text: file / paste) ============ -->
     <string name="fab_import_config">Import setup</string>
     <string name="import_title">Import 2FA setup</string>
+    <string name="import_subtitle">Batch import from otpauth text (pick a file or paste)</string>
     <string name="import_desc">Accepts otpauth://totp/ text: one per line. Blank lines and lines starting with # are ignored.</string>
     <string name="import_source_file">Choose file</string>
     <string name="import_source_paste">Paste text</string>
@@ -135,6 +148,7 @@
 
     <!-- ============ Sync settings ============ -->
     <string name="status_not_configured">Not configured</string>
+    <string name="err_vault_not_configured">No account connected yet: enter a master_key or pairing code under Settings → Account first</string>
     <string name="status_logged_in">Signed in: %1$s</string>
     <string name="sync_configure_hint">Enter a master_key or pairing code to finish setup, or scan the server QR code to prefill the address.</string>
     <string name="label_device">Device: %1$s</string>

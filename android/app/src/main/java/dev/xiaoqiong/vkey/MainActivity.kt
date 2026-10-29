@@ -166,9 +166,8 @@ private enum class VkeyPage(val depth: Int) {
     HOME(0),
     SYNC(1),
     SCAN(1),
-    /** 导入页可从主页 FAB 或设置·数据进入，退回到来时的那一页，层级因此与「关于」同深。 */
+    /** 导入页可从主页 FAB 或设置·设置进入，退回到来时的那一页，层级因此比设置页深一层。 */
     IMPORT(2),
-    ABOUT(2),
 }
 
 /** 应用入口：持有库状态与「自动锁定」逻辑，UI 全部在 Compose 里。 */
@@ -1495,7 +1494,6 @@ private fun VaultScreen(
                 language = language,
                 onLanguageChange = onLanguageChange,
                 onClearDevice = { onPersist(vault.copy(device = null)) },
-                onOpenAbout = { topPage = VkeyPage.ABOUT },
                 onClose = {
                     enrollPrefill = null
                     // 访客态（首启跳过、仍未接入）从设置返回时回到首启二选一页，而不是空主页
@@ -1520,11 +1518,7 @@ private fun VaultScreen(
                 },
             )
 
-            VkeyPage.ABOUT -> dev.xiaoqiong.vkey.ui.AboutScreen(
-                onClose = { topPage = VkeyPage.SYNC },
-            )
-
-            // 主页 FAB / 设置·数据：从 otpauth 文本（选文件 / 粘贴）批量导入 2FA 条目。
+            // 主页 FAB / 设置·设置：从 otpauth 文本（选文件 / 粘贴）批量导入 2FA 条目。
             // 落盘走 writeAndVerify：失败回传文案在页内展示，成功才 Toast + 回到来源页。
             VkeyPage.IMPORT -> dev.xiaoqiong.vkey.ui.ImportScreen(
                 existing = vault.items,

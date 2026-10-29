@@ -114,9 +114,8 @@
     <string name="settings_auto_lock_desc">关闭时：从后台回来直接进入（系统已解锁过）</string>
     <!-- 分组导航：每组一个 tab，只显示该组的项 -->
     <string name="settings_tab_account">账号</string>
-    <string name="settings_tab_local">本机</string>
-    <string name="settings_tab_appearance">外观</string>
-    <string name="settings_tab_data">数据</string>
+    <string name="settings_tab_settings">设置</string>
+    <string name="settings_tab_about">关于</string>
 
     <!-- ============ 导出 2FA 配置（otpauth 文本 + 系统分享） ============ -->
     <string name="export_totp_title">导出 2FA 配置</string>
@@ -151,7 +150,6 @@
     <string name="status_not_configured">未配置</string>
     <string name="err_vault_not_configured">尚未接入账号：请先在「设置 → 账号」输入 master_key 或配对码</string>
     <string name="status_logged_in">已登录：%1$s</string>
-    <string name="sync_configure_hint">输入 master_key 或配对码完成配置；也可以先扫服务端二维码自动填好地址。</string>
     <string name="label_device">设备：%1$s</string>
     <string name="label_server">服务器：%1$s</string>
     <string name="label_account_line">账号：%1$s</string>
@@ -161,9 +159,6 @@
     <string name="sync_scan_hint">扫码可识别服务端 /pair 或主页的二维码（内容只有服务器地址）</string>
     <!-- 可折叠卡片：标题 + 折叠态状态摘要 + 展开/收起无障碍描述 -->
     <string name="section_server_address">服务端地址</string>
-    <string name="enroll_card_new_account">接入新账号</string>
-    <string name="state_expanded">已展开</string>
-    <string name="state_collapsed">已收起</string>
     <string name="section_item_sync">条目同步</string>
     <string name="item_sync_desc">把本机改动推送到服务端，并拉回其它设备的改动（端到端加密，服务端只见密文）。</string>
     <string name="action_sync_now">立即同步</string>
@@ -182,6 +177,15 @@
     <string name="section_device_management">设备管理</string>
     <string name="warn_server_changed">填写的地址与当前配对不一致：更换服务器后需要重新配对。</string>
     <string name="action_clear_pairing">解除账户绑定（保留本地数据）</string>
+    <!-- ============ 同步配置：接入方式（三选一，只渲染当前方式的表单） ============ -->
+    <string name="connect_section_title">接入方式</string>
+    <string name="connect_mode_master_key">已有 master_key / 恢复码（52 位）</string>
+    <string name="connect_mode_master_key_desc">已在其它设备用过：输入恢复码即可</string>
+    <string name="connect_mode_pair">配对码（在已登录设备上生成）</string>
+    <string name="connect_mode_pair_desc">在已登录设备上生成一次性配对码</string>
+    <string name="connect_mode_enroll">开户码（管理员发放）</string>
+    <string name="connect_mode_enroll_desc">管理员发放的 ENROLL-XXXX-XXXX</string>
+    <string name="info_connect_mode_switched">已切换到「%1$s」</string>
     <string name="section_login_master_key">用 master_key 登录</string>
     <string name="login_master_key_desc">恢复码 / master_key（52 位）。本机会生成并保存自己的设备密钥。</string>
     <string name="action_login_with_master_key">用 master_key 完成配置</string>
@@ -328,7 +332,6 @@
     <string name="about_label_license">开源许可</string>
     <string name="about_server_unset">未配置</string>
     <string name="about_license_missing">未声明</string>
-    <string name="about_link_homepage">主页</string>
     <string name="about_link_repo">项目地址</string>
     <string name="about_footer">验证码与密钥均在本机加密存储，服务端零知识</string>
 </resources>

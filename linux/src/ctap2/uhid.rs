@@ -343,8 +343,10 @@ mod tests {
             u16::from_le_bytes([ev[base], ev[base + 1]]) as usize,
             REPORT_DESCRIPTOR.len()
         );
+        // uhid_create2_req: name(128) phys(64) uniq(64) rd_size(2) bus(2)
+        //                   vendor(4) product(4) version(4) country(4) → rd_data 从 base+20 开始
         assert_eq!(
-            &ev[base + 16..base + 16 + REPORT_DESCRIPTOR.len()],
+            &ev[base + 20..base + 20 + REPORT_DESCRIPTOR.len()],
             REPORT_DESCRIPTOR
         );
     }

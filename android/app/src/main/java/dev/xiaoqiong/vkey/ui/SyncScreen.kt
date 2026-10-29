@@ -127,6 +127,8 @@ private enum class ConfirmKind { NONE, CLEAR_DEVICE, ENROLL }
  * @param onClearDevice 断开配对（清除设备材料）
  * @param onOpenAbout 打开「关于」页
  * @param onClose 关闭本页
+ * @param canExportTotp 是否存在可导出的 2FA 条目（false 时「导出 2FA 配置」入口不显示）
+ * @param onExportTotp 点击「导出 2FA 配置」（验证与分享由 Activity 负责）
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -151,6 +153,8 @@ fun SyncScreen(
     onLanguageChange: (LanguageMode) -> Unit,
     onOpenAbout: () -> Unit,
     onClose: () -> Unit,
+    canExportTotp: Boolean,
+    onExportTotp: () -> Unit,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -865,6 +869,35 @@ fun SyncScreen(
                                         modifier = Modifier.weight(1f),
                                     ) { Text(stringResource(R.string.action_scan_input)) }
                                 }
+                            }
+                        }
+                    }
+
+                    // ---------------- 导出 2FA（「关于」上方；无条目时不显示） ----------------
+                    if (canExportTotp) {
+                        Card(Modifier.fillMaxWidth()) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable(onClick = onExportTotp)
+                                    .padding(horizontal = 16.dp, vertical = 16.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        stringResource(R.string.export_totp_title),
+                                        style = MaterialTheme.typography.bodyLarge,
+                                    )
+                                    Text(
+                                        stringResource(R.string.export_totp_subtitle),
+                                        style = MaterialTheme.typography.bodySmall,
+                                    )
+                                }
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
                             }
                         }
                     }

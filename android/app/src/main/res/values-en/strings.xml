@@ -105,6 +105,34 @@
     <string name="settings_auto_lock_title">Require unlock when returning to foreground</string>
     <string name="settings_auto_lock_desc">When off: returning from background goes straight in (system already unlocked)</string>
 
+    <!-- ============ Export 2FA setup (otpauth text + system share sheet) ============ -->
+    <string name="export_totp_title">Export 2FA setup</string>
+    <string name="export_totp_subtitle">Export as otpauth text that other authenticators can import</string>
+    <string name="export_totp_warning">The export contains every secret in plain text. Anyone who gets it can generate your codes. Do not send it over insecure channels, and delete it once you are done.</string>
+    <string name="export_totp_confirm">Export anyway</string>
+    <string name="export_totp_chooser_title">Share 2FA setup</string>
+    <string name="export_totp_need_unlock">Set a lock-screen password before exporting</string>
+    <string name="export_totp_auth_failed">Verification failed, export cancelled</string>
+
+    <!-- ============ Import 2FA setup (otpauth text: file / paste) ============ -->
+    <string name="fab_import_config">Import setup</string>
+    <string name="import_title">Import 2FA setup</string>
+    <string name="import_desc">Accepts otpauth://totp/ text: one per line. Blank lines and lines starting with # are ignored.</string>
+    <string name="import_source_file">Choose file</string>
+    <string name="import_source_paste">Paste text</string>
+    <string name="import_text_label">otpauth text</string>
+    <string name="import_text_placeholder">otpauth://totp/Issuer:account?secret=BASE32…</string>
+    <string name="import_reading_file">Reading file…</string>
+    <string name="import_file_read_failed">Failed to read file: %1$s</string>
+    <string name="import_file_too_large">File is too large (limit %1$d KB)</string>
+    <string name="import_stats">Matched %1$d: importable %2$d · duplicate %3$d · HOTP unsupported %4$d · unrecognized %5$d</string>
+    <string name="import_empty_hint">Choose a file or paste text to see the results here</string>
+    <string name="import_none_importable">Nothing importable</string>
+    <string name="import_more_items">%1$d more not shown</string>
+    <string name="import_action">Import %1$d</string>
+    <string name="import_toast_done">Imported %1$d</string>
+    <string name="import_security_hint">Imported secrets are the same as manually added ones and will sync to the server (encrypted)</string>
+
     <!-- ============ Sync settings ============ -->
     <string name="status_not_configured">Not configured</string>
     <string name="status_logged_in">Signed in: %1$s</string>

@@ -31,6 +31,7 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
@@ -80,6 +81,7 @@ import dev.xiaoqiong.vkey.sync.SyncStats
 import dev.xiaoqiong.vkey.totp.Totp
 import dev.xiaoqiong.vkey.ui.IssuerIcon
 import dev.xiaoqiong.vkey.ui.ScanMode
+import dev.xiaoqiong.vkey.ui.buildOtpauthUri
 import dev.xiaoqiong.vkey.ui.clearClipboard
 import dev.xiaoqiong.vkey.ui.copyToClipboard
 import dev.xiaoqiong.vkey.ui.describeFailure
@@ -118,6 +120,12 @@ private const val CREATED_AT_PATTERN = "yyyy-MM-dd HH:mm"
 /** 深链取证日志标签（`adb logcat -s vkey-deeplink`）。 */
 private const val DEEP_LINK_LOG_TAG = "vkey-deeplink"
 
+/** 导出 2FA 时的免验证窗口（毫秒）：刚通过系统验证就跳过，避免连续弹窗。 */
+private const val EXPORT_AUTH_GRACE_MS = 30_000L
+
+/** 导出内容的 MIME 类型（纯文本，交给系统分享面板，不上传任何地方）。 */
+private const val EXPORT_MIME_TYPE = "text/plain"
+
 /**
  * 库内的顶层页面。
  *
@@ -130,6 +138,7 @@ private enum class VkeyPage(val depth: Int) {
     HOME(0),
     SYNC(1),
     SCAN(1),
+    IMPORT(1),
     ABOUT(2),
 }
 
@@ -171,6 +180,12 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
 
     /** 系统验证进行中，避免重复拉起。 */
     private var authInFlight = false
+
+    /** 最近一次系统验证成功的时间（毫秒），用于导出 2FA 时 30 秒内免重复验证。 */
+    private var lastAuthAt = 0L
+
+    /** 「导出 2FA 配置」红色警告弹窗是否可见（验证通过后才置 true）。 */
+    private val exportDialogVisible = mutableStateOf(false)
 
     /** 验证弹窗关闭会触发一次 onResume，用它跳过循环触发。 */
     private var skipNextResume = false
@@ -261,6 +276,10 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                         pendingPairCode.value = null
                         pendingEnroll.value = null
                     },
+                    exportDialogVisible = exportDialogVisible.value,
+                    onRequestExport = { requestTotpExport() },
+                    onConfirmExport = { shareTotpExport() },
+                    onDismissExport = { exportDialogVisible.value = false },
                 )
             }
         }
@@ -382,6 +401,21 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
      * 避免「取消 → 立刻重弹」的循环；需要用户主动点击才能再次验证。
      */
     private fun showSystemAuth() {
+        authenticate(onSuccess = { locked.value = false })
+    }
+
+    /**
+     * 拉起系统验证，成功后执行 [onSuccess]（解锁页与导出前验证共用同一段实现）。
+     *
+     * 验证成功会记录时间戳，供 [requestTotpExport] 的 30 秒免重复验证使用。
+     *
+     * @param onSuccess 验证通过后的动作
+     * @param onError 验证出错时的额外回调（错误码 + 系统文案）；null 时只更新解锁页状态
+     */
+    private fun authenticate(
+        onSuccess: () -> Unit,
+        onError: ((Int, CharSequence) -> Unit)? = null,
+    ) {
         if (authInFlight) return
         val allowed = androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_STRONG or
             androidx.biometric.BiometricManager.Authenticators.DEVICE_CREDENTIAL
@@ -402,7 +436,8 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                     result: androidx.biometric.BiometricPrompt.AuthenticationResult,
                 ) {
                     authInFlight = false
-                    locked.value = false
+                    lastAuthAt = System.currentTimeMillis()
+                    onSuccess()
                 }
 
                 override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
@@ -410,6 +445,7 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                     skipNextResume = true
                     lockMessage.value = getString(R.string.lock_failed, errString)
                     canRetry.value = true
+                    onError?.invoke(errorCode, errString)
                 }
 
                 override fun onAuthenticationFailed() {
@@ -429,6 +465,59 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                 lockMessage.value = getString(R.string.lock_unavailable, it.message.orEmpty())
                 canRetry.value = true
             }
+    }
+
+    /** 可导出的 2FA 条目：排除墓碑与非 totp 条目（与列表页可见条目的口径一致）。 */
+    private fun exportableTotpItems(): List<TotpItem> =
+        vault.value?.items.orEmpty().filter { it.kind == ItemJson.KIND_TOTP && !it.deleted }
+
+    /**
+     * 点击「导出 2FA 配置」：先验证（30 秒内刚验证过则跳过），通过后才弹红色警告。
+     *
+     * 未设置锁屏密码或验证被取消/失败时**不导出**（弹窗也不会出现）。
+     */
+    private fun requestTotpExport() {
+        // 防御：没有条目时入口不显示，这里再挡一次（不触发验证、不弹窗）
+        if (exportableTotpItems().isEmpty()) return
+        if (System.currentTimeMillis() - lastAuthAt <= EXPORT_AUTH_GRACE_MS) {
+            exportDialogVisible.value = true
+            return
+        }
+        val km = getSystemService(KEYGUARD_SERVICE) as android.app.KeyguardManager
+        if (!km.isDeviceSecure) {
+            Toast.makeText(this, getString(R.string.export_totp_need_unlock), Toast.LENGTH_LONG).show()
+            return
+        }
+        authenticate(
+            onSuccess = { exportDialogVisible.value = true },
+            onError = { errorCode, _ ->
+                // 用户主动取消不算失败，不打扰
+                val cancelled = errorCode == androidx.biometric.BiometricPrompt.ERROR_NEGATIVE_BUTTON ||
+                    errorCode == androidx.biometric.BiometricPrompt.ERROR_USER_CANCELED ||
+                    errorCode == androidx.biometric.BiometricPrompt.ERROR_CANCELED
+                if (!cancelled) {
+                    Toast.makeText(this, getString(R.string.export_totp_auth_failed), Toast.LENGTH_SHORT)
+                        .show()
+                }
+            },
+        )
+    }
+
+    /**
+     * 用户确认导出：把全部未删除的 2FA 条目拼成 otpauth 文本，交给系统分享面板。
+     *
+     * 明文只存在于本次 Intent 载荷里：不写日志、不落文件、不上传；条目为空时直接返回。
+     */
+    private fun shareTotpExport() {
+        exportDialogVisible.value = false
+        val items = exportableTotpItems()
+        if (items.isEmpty()) return
+        val payload = items.joinToString("\n") { buildOtpauthUri(it) }
+        // 用 createChooser 由系统决定渠道（微信 / 邮件 / 云盘…），本应用不接触任何网络
+        val send = Intent(Intent.ACTION_SEND)
+            .setType(EXPORT_MIME_TYPE)
+            .putExtra(Intent.EXTRA_TEXT, payload)
+        startActivity(Intent.createChooser(send, getString(R.string.export_totp_chooser_title)))
     }
 }
 
@@ -460,6 +549,10 @@ private fun VkeyApp(
     enrollPrefillState: MutableState<EnrollDeepLink?>,
     syncPrefillState: MutableState<String>,
     onPendingHandled: () -> Unit,
+    exportDialogVisible: Boolean,
+    onRequestExport: () -> Unit,
+    onConfirmExport: () -> Unit,
+    onDismissExport: () -> Unit,
 ) {
     when {
         vault == null -> SetupScreen(onCreate = onCreate)
@@ -485,6 +578,10 @@ private fun VkeyApp(
             enrollPrefillState = enrollPrefillState,
             syncPrefillState = syncPrefillState,
             onPendingHandled = onPendingHandled,
+            exportDialogVisible = exportDialogVisible,
+            onRequestExport = onRequestExport,
+            onConfirmExport = onConfirmExport,
+            onDismissExport = onDismissExport,
         )
     }
 }
@@ -591,6 +688,10 @@ private fun VaultScreen(
     enrollPrefillState: MutableState<EnrollDeepLink?>,
     syncPrefillState: MutableState<String>,
     onPendingHandled: () -> Unit,
+    exportDialogVisible: Boolean,
+    onRequestExport: () -> Unit,
+    onConfirmExport: () -> Unit,
+    onDismissExport: () -> Unit,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -895,6 +996,13 @@ private fun VaultScreen(
                                         showAdd = true
                                     },
                                 )
+                                ActionButton(
+                                    label = stringResource(R.string.fab_import_config),
+                                    onClick = {
+                                        fabExpanded = false
+                                        topPage = VkeyPage.IMPORT
+                                    },
+                                )
                             }
                             Spacer(Modifier.height(4.dp))
                         }
@@ -948,10 +1056,25 @@ private fun VaultScreen(
                 onClearDevice = { onPersist(vault.copy(device = null)) },
                 onOpenAbout = { topPage = VkeyPage.ABOUT },
                 onClose = { enrollPrefill = null; topPage = VkeyPage.HOME },
+                // 与列表页可见条目同口径：至少一条未删除的 totp 条目才显示导出入口
+                canExportTotp = vault.items.any { it.kind == ItemJson.KIND_TOTP && !it.deleted },
+                onExportTotp = onRequestExport,
             )
 
             VkeyPage.ABOUT -> dev.xiaoqiong.vkey.ui.AboutScreen(
                 onClose = { topPage = VkeyPage.SYNC },
+            )
+
+            // 主页 FAB：从 otpauth 文本（选文件 / 粘贴）批量导入 2FA 条目。
+            // 落盘走 writeAndVerify：失败回传文案在页内展示，成功才 Toast + 回列表。
+            VkeyPage.IMPORT -> dev.xiaoqiong.vkey.ui.ImportScreen(
+                existing = vault.items,
+                onImport = { items ->
+                    // 用 latestVault 而非闭包快照，避免覆盖导入期间发生的并发写入
+                    val base = latestVault
+                    onPersistVerified(base.copy(items = base.items + items))
+                },
+                onClose = { topPage = VkeyPage.HOME },
             )
 
             // 主页 FAB：添加 2FA 条目的入口，只接受 otpauth:// 二维码
@@ -1029,15 +1152,40 @@ private fun VaultScreen(
             },
         )
     }
+
+    // 导出 2FA：验证通过后才出现；红色强调「明文密钥」风险，确认后才生成并分享
+    if (exportDialogVisible) {
+        AlertDialog(
+            onDismissRequest = onDismissExport,
+            title = { Text(stringResource(R.string.export_totp_title)) },
+            text = {
+                Text(
+                    text = stringResource(R.string.export_totp_warning),
+                    color = MaterialTheme.colorScheme.error,
+                    fontWeight = FontWeight.Medium,
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = onConfirmExport,
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                ) { Text(stringResource(R.string.export_totp_confirm)) }
+            },
+            dismissButton = {
+                TextButton(onClick = onDismissExport) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            },
+        )
+    }
 }
 
 @Composable
 private fun ActionButton(label: String, onClick: () -> Unit) {
-    ExtendedFloatingActionButton(
-        onClick = onClick,
-        icon = {},
-        text = { Text(label) },
-    )
+    // 直接用 content 槽（不传空 icon）：空 icon 会让 uiautomator / 无障碍服务读不到按钮文字
+    ExtendedFloatingActionButton(onClick = onClick) {
+        Text(label)
+    }
 }
 
 /**

@@ -106,6 +106,34 @@
     <string name="settings_auto_lock_title">回到前台时重新解锁</string>
     <string name="settings_auto_lock_desc">关闭时：从后台回来直接进入（系统已解锁过）</string>
 
+    <!-- ============ 导出 2FA 配置（otpauth 文本 + 系统分享） ============ -->
+    <string name="export_totp_title">导出 2FA 配置</string>
+    <string name="export_totp_subtitle">导出为 otpauth 文本，可导入其它验证器</string>
+    <string name="export_totp_warning">导出的内容包含全部密钥明文，任何拿到的人都可生成你的验证码。请勿通过不安全渠道发送，用完即删。</string>
+    <string name="export_totp_confirm">仍要导出</string>
+    <string name="export_totp_chooser_title">分享 2FA 配置</string>
+    <string name="export_totp_need_unlock">需要先设置锁屏密码才能导出</string>
+    <string name="export_totp_auth_failed">验证未通过，已取消导出</string>
+
+    <!-- ============ 导入 2FA 配置（otpauth 文本：选文件 / 粘贴） ============ -->
+    <string name="fab_import_config">导入配置</string>
+    <string name="import_title">导入 2FA 配置</string>
+    <string name="import_desc">支持 otpauth://totp/ 文本：每行一条，空行与 # 开头的注释会被忽略。</string>
+    <string name="import_source_file">选择文件</string>
+    <string name="import_source_paste">粘贴文本</string>
+    <string name="import_text_label">otpauth 文本</string>
+    <string name="import_text_placeholder">otpauth://totp/Issuer:account?secret=BASE32…</string>
+    <string name="import_reading_file">正在读取文件…</string>
+    <string name="import_file_read_failed">读取文件失败：%1$s</string>
+    <string name="import_file_too_large">文件过大（上限 %1$d KB）</string>
+    <string name="import_stats">共识别 %1$d 条：可导入 %2$d · 重复 %3$d · 不支持 HOTP %4$d · 无法识别 %5$d</string>
+    <string name="import_empty_hint">选择文件或粘贴文本后，这里会显示识别结果</string>
+    <string name="import_none_importable">没有可导入的条目</string>
+    <string name="import_more_items">还有 %1$d 条未显示</string>
+    <string name="import_action">导入 %1$d 条</string>
+    <string name="import_toast_done">已导入 %1$d 条</string>
+    <string name="import_security_hint">导入的密钥与手动添加等价，会同步到服务端（密文）</string>
+
     <!-- ============ 同步配置 ============ -->
     <string name="status_not_configured">未配置</string>
     <string name="status_logged_in">已登录：%1$s</string>

@@ -3,6 +3,7 @@ package dev.xiaoqiong.vkey
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
+import android.util.Log
 import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.compose.setContent
@@ -49,6 +50,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -113,6 +115,9 @@ private const val PAGE_COUNT = 2
 /** 密钥凭据创建时间的展示格式。 */
 private const val CREATED_AT_PATTERN = "yyyy-MM-dd HH:mm"
 
+/** 深链取证日志标签（`adb logcat -s vkey-deeplink`）。 */
+private const val DEEP_LINK_LOG_TAG = "vkey-deeplink"
+
 /**
  * 库内的顶层页面。
  *
@@ -149,6 +154,20 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
 
     /** 深链带来的开户请求（`vkey://enroll?server=…&code=…`）；null 表示无。 */
     private val pendingEnroll = mutableStateOf<EnrollDeepLink?>(null)
+
+    /**
+     * 库内当前顶层页面。
+     *
+     * 由 Activity 持有而不是组合内 `remember`：深链在 [handleDeepLink] 里直接改它即可跳转，
+     * 不依赖组合副作用（热启动时 `LaunchedEffect` 曾未触发导致停在主页）。
+     */
+    private val topPageState = mutableStateOf(VkeyPage.HOME)
+
+    /** 开户深链预填（预填开户卡并展开）；由 Activity 直接写入，组合层只读。 */
+    private val enrollPrefillState = mutableStateOf<EnrollDeepLink?>(null)
+
+    /** 配对码预填（深链带来的配对码，进「设置」页时填进输入框）。 */
+    private val syncPrefillState = mutableStateOf("")
 
     /** 系统验证进行中，避免重复拉起。 */
     private var authInFlight = false
@@ -233,6 +252,10 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                     pendingSyncServer = pendingSyncServer.value,
                     pendingPairCode = pendingPairCode.value,
                     pendingEnroll = pendingEnroll.value,
+                    onApplyEnrollLink = { link -> applyEnrollLink(link, fromOnNewIntent = false) },
+                    topPageState = topPageState,
+                    enrollPrefillState = enrollPrefillState,
+                    syncPrefillState = syncPrefillState,
                     onPendingHandled = {
                         pendingSyncServer.value = null
                         pendingPairCode.value = null
@@ -246,7 +269,7 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        handleDeepLink(intent)
+        handleDeepLink(intent, fromOnNewIntent = true)
     }
 
     /**
@@ -255,12 +278,14 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
      * - 配置深链：只写服务器地址，并打开「同步配置」页让用户输入配对码 / master_key；
      * - 配对深链：预填配对码（免鉴权领取，无需先登录）；
      * - 开户深链：已登录（`vault.device != null`）时**完全不响应**（不跳转、不改地址、不弹窗），
-     *   只提示「当前已登录 X，无需开户」；未登录时交给 [VaultScreen] 消费（覆盖地址并预填开户卡）；
+     *   只提示「当前已登录 X，无需开户」；未登录时由 [applyEnrollLink] 直接应用
+     *   （覆盖地址、预填开户卡、打开「设置」页），冷启动与热启动走同一条路径；
      *   server/code 缺失或格式不符只提示「链接无效或已过期」，绝不改动现有配置。
      *
      * @param intent 启动或复用的 Intent（非 VIEW 或没有 data 时直接返回）
+     * @param fromOnNewIntent 是否来自 [onNewIntent]（只用于日志取证）
      */
-    private fun handleDeepLink(intent: Intent?) {
+    private fun handleDeepLink(intent: Intent?, fromOnNewIntent: Boolean = false) {
         if (intent?.action != Intent.ACTION_VIEW) return
         val data = intent.dataString ?: return
 
@@ -302,9 +327,33 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
             } else {
                 pendingPairCode.value = null
                 pendingSyncServer.value = null
+                // 直接应用（不依赖组合副作用）；pendingEnroll 仍保留，组合层作兜底
+                applyEnrollLink(link, fromOnNewIntent = fromOnNewIntent)
                 pendingEnroll.value = link
             }
         }
+    }
+
+    /**
+     * 应用一条开户深链：覆盖服务器地址 → 预填开户卡 → 打开「设置」页。
+     *
+     * 全部写入 Activity 持有的状态（[settings] / [enrollPrefillState] / [topPageState]），
+     * 因此冷启动（[onCreate]）与热启动（[onNewIntent]）都能直接生效，
+     * 不依赖组合里的 `LaunchedEffect`（热启动曾因此停在主页）。
+     *
+     * @param link 已校验的开户深链
+     * @param fromOnNewIntent 是否来自 [onNewIntent]（仅用于日志取证）
+     */
+    private fun applyEnrollLink(link: EnrollDeepLink, fromOnNewIntent: Boolean) {
+        settings.serverUrl = link.serverUrl
+        syncPrefillState.value = ""
+        enrollPrefillState.value = link
+        topPageState.value = VkeyPage.SYNC
+        // 只记码长，不落开户码明文
+        Log.i(
+            DEEP_LINK_LOG_TAG,
+            "enroll link applied (fromOnNewIntent=$fromOnNewIntent, codeLength=${link.code.length})",
+        )
     }
 
     override fun onStop() {
@@ -406,6 +455,10 @@ private fun VkeyApp(
     pendingSyncServer: String?,
     pendingPairCode: String?,
     pendingEnroll: EnrollDeepLink?,
+    onApplyEnrollLink: (EnrollDeepLink) -> Unit,
+    topPageState: MutableState<VkeyPage>,
+    enrollPrefillState: MutableState<EnrollDeepLink?>,
+    syncPrefillState: MutableState<String>,
     onPendingHandled: () -> Unit,
 ) {
     when {
@@ -427,6 +480,10 @@ private fun VkeyApp(
             pendingSyncServer = pendingSyncServer,
             pendingPairCode = pendingPairCode,
             pendingEnroll = pendingEnroll,
+            onApplyEnrollLink = onApplyEnrollLink,
+            topPageState = topPageState,
+            enrollPrefillState = enrollPrefillState,
+            syncPrefillState = syncPrefillState,
             onPendingHandled = onPendingHandled,
         )
     }
@@ -529,23 +586,27 @@ private fun VaultScreen(
     pendingSyncServer: String?,
     pendingPairCode: String?,
     pendingEnroll: EnrollDeepLink?,
+    onApplyEnrollLink: (EnrollDeepLink) -> Unit,
+    topPageState: MutableState<VkeyPage>,
+    enrollPrefillState: MutableState<EnrollDeepLink?>,
+    syncPrefillState: MutableState<String>,
     onPendingHandled: () -> Unit,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var showAdd by remember { mutableStateOf(false) }
     var fabExpanded by remember { mutableStateOf(false) }
-    // 当前顶层页面：转场方向的唯一依据（按 VkeyPage.depth 比较前后两层）
-    var topPage by remember { mutableStateOf(VkeyPage.HOME) }
+    // 当前顶层页面：状态由 Activity 持有（深链在组合外直接跳转），转场方向按 VkeyPage.depth 判定
+    var topPage by topPageState
     // 待确认的删除 / 吊销目标：null = 没有弹窗（所有删除都必须二次确认）
     var pendingDelete by remember { mutableStateOf<TotpItem?>(null) }
     var pendingRevoke by remember { mutableStateOf<WebAuthnItem?>(null) }
     // 2FA / 密钥两个页签，支持左右滑动；页签与滑动双向同步
     val pagerState = rememberPagerState(pageCount = { PAGE_COUNT })
-    // 深链带来的配对码：先固定下来再清除 pending，避免 SyncScreen 首帧读到 null
-    var syncPrefill by remember { mutableStateOf("") }
+    // 深链带来的配对码：状态由 Activity 持有，进「设置」页时预填
+    var syncPrefill by syncPrefillState
     // 深链带来的开户请求：进「设置」页时展开开户卡并预填 code/username；离开本页即清除
-    var enrollPrefill by remember { mutableStateOf<EnrollDeepLink?>(null) }
+    var enrollPrefill by enrollPrefillState
     // 主页：连按两次返回才退出（第一次给出提示）
     val activity = LocalContext.current as? android.app.Activity
     var lastBackAt by remember { mutableLongStateOf(0L) }
@@ -681,24 +742,11 @@ private fun VaultScreen(
         }
     }
 
-    /**
-     * 应用一条开户深链：覆盖服务器地址 → 预填开户卡 → 打开「设置」页。
-     *
-     * serverUrl 经 [onServerUrlChange] 落 AppSettings；同时把地址留在
-     * [enrollPrefill] 里，SyncScreen 首帧组合时直接取它，避免读到未重组的旧值。
-     */
-    val applyEnrollLink: (EnrollDeepLink) -> Unit = { link ->
-        onServerUrlChange(link.serverUrl)
-        enrollPrefill = link
-        syncPrefill = ""
-        topPage = VkeyPage.SYNC
-    }
-
-    // 开户深链：已登录的请求在 Activity 层就被拦下（只提示，不进入这里），
-    // 因此到此只会是未登录场景，直接应用
+    // 开户深链兜底：主路径在 Activity 的 onNewIntent/onCreate 里已直接应用（写同一份状态）；
+    // 这里只在尚未应用过时补一次，保证「pendingEnroll 有值但页面没跳」不会发生。
     LaunchedEffect(pendingEnroll) {
         val link = pendingEnroll ?: return@LaunchedEffect
-        applyEnrollLink(link)
+        if (enrollPrefill != link) onApplyEnrollLink(link)
         onPendingHandled()
     }
 

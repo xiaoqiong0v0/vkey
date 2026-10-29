@@ -517,6 +517,8 @@ LWW（last-write-wins）规则：
 |---|---|
 | `GET /` | 自检页（HTML）：状态、版本、条目数、设备数、策略、服务器地址。**无解密逻辑** |
 | `GET /pair` | 配对页（HTML）：配对码输入提示（只读占位）+ APK 下载占位 |
+| `GET /join?c=<CODE>` | **开户落地页**（HTML，免鉴权，仅 `user_mode=admin` 有意义）：开户码**有效未使用**时 200，渲染同源二维码、明文开户码、深链 `vkey://enroll?server=<地址>&code=<CODE>` 按钮与下载链接；缺参数 400，非 admin/不存在/已用/已撤销/过期一律 404 + 统一文案「链接无效或已过期」（不区分细节，防枚举）。响应 `Cache-Control: no-store`；**访问日志只记路径不记 query**（开户码在 `?c=` 中）。打开页面不消费开户码 |
+| `GET /join/qr.png?c=<CODE>` | 开户二维码 PNG：`image/png` + `Content-Disposition: attachment; filename="vkey-enroll.png"`，内容为落地页同一深链；有效性判定与 `/join` 完全一致（无效时返回同一 4xx 错误页） |
 | `GET /install.sh` | Linux 引导脚本：注入 `server_url`、`uname -m` 选择架构、按 `SHA256SUMS` 校验后下载 `/dl/vkey-hid-linux-<x86_64\|aarch64>.tar.gz`、安装二进制、交互输入凭据、写 udev/tmpfiles 与 systemd user unit（`--no-sudo`/`--no-service` 可跳过） |
 | `GET /install.ps1` | Windows 引导脚本：注入 `server_url`、探测 `PROCESSOR_ARCHITECTURE`、下载 MSI 占位、写 `%APPDATA%\vkey` 配置 |
 | `GET /dl/{name}` | 产物下载（免鉴权，只读）：`name` 必须匹配 `^[A-Za-z0-9._-]+$` 且出现在 `<artifacts-dir>/SHA256SUMS` 里，否则 404（含 `/`、`..`、空名与多段路径）。响应 `application/octet-stream` + `Content-Length` + `Cache-Control: no-cache` |
@@ -719,8 +721,13 @@ vkeyd policy set --db <path> --require-master-pw=<bool>
     `id TEXT PRIMARY KEY + UNIQUE(user_id, id)`，M1 单账号下成立；多用户（`user_mode=admin`）
     下不同账号写同名 item id 会触发全局 PK 冲突（500）。item id 由客户端自选，语义上只在
     账号内唯一。服务端打开旧库时按 SQLite 官方 12 步流程自动迁移（行数不变、幂等）；
-    客户端协议字段不变，但所有依赖「id 全局唯一」的运维操作（如 `vkeyd purge` 的墓碑定位）
-    必须按 `(user_id, id)` 成对处理。
+     客户端协议字段不变，但所有依赖「id 全局唯一」的运维操作（如 `vkeyd purge` 的墓碑定位）
+     必须按 `(user_id, id)` 成对处理。
+12. **新增开户落地页 `GET /join?c=<CODE>` 与 `GET /join/qr.png?c=<CODE>`**（见 §4.13）。原契约
+    开户码只能由客户端 API 直传；管理员 `vkeyd user add` 需一个可直接发给对方的链接，故新增
+    两个免鉴权 HTML/QR 端点。开户码在 query 中属一次性凭据：契约要求访问日志对 `/join*` 脱敏
+    （只记路径）、页面/日志不得出现 master_key/verifier/token、无效情形统一 4xx 文案防枚举、
+    且落地页只读校验不消费开户码（消费仍仅在 `POST /api/v1/auth/enroll`）。
 
 ---
 

@@ -26,6 +26,7 @@ vkeyd 是「单进程 + 单 sqlite 连接 + 同步处理函数」的模型：没
 | 11 | 配额判定 | `meta` 中 `quota.*` 键 + `items/devices` 计数 | 设备/条目配额在**写事务内**计数判定（`checkDeviceSlot` / `checkItemQuota`）；配额值本身在事务外预读 | 超限整批回滚（不部分生效）；「读配额值」与「写事务」之间的配置修改允许一个请求窗口内不一致（运维改配置非协议事件） | `internal/store/store.go`、`internal/store/items.go`、`internal/store/devices.go`、`internal/store/pairs.go` |
 | 12 | 停用判定 | `users.disabled_at` | 只读，无写竞争 | `authenticate` 与 `auth/token`、`pair/claim` 每次请求实时读取：disable 生效不需要进程内状态变更 | `internal/api/api.go:authenticate`、`internal/store/pairs.go:ClaimPair` |
 | 13 | items 主键迁移 | 连接级 `PRAGMA foreign_keys`（OFF→迁移→ON） | 仅在 `Open` 阶段执行（进程尚未开始服务）；`SetMaxOpenConns(1)` 保证 BEGIN/DDL/COMMIT 落在同一连接 | `PRAGMA foreign_keys=OFF` 必须在 `BEGIN IMMEDIATE` 之前（事务内该 PRAGMA 是 no-op）；失败即 ROLLBACK 并恢复 ON；重复打开已迁移库直接跳过（`PRAGMA table_info` 判定） | `internal/store/store.go:migrateItemsPK` |
+| 14 | 开户码状态检查（/join 落地页） | `enroll_codes.used_at/revoked_at`（**只读**） | `PeekEnrollCode` 只查询、零写操作；单连接下与写事务天然串行 | 打开页面/取二维码**绝不消费**开户码；与 `Enroll` 事务交错时可能读到「刚被消费」→ 统一 404 失效页（预期行为，消费语义不变） | `internal/store/enroll.go:PeekEnrollCode`、`internal/api/join.go` |
 
 ## 不变量
 

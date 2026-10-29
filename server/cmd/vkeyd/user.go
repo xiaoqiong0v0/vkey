@@ -16,7 +16,7 @@ import (
 
 // 本文件实现 `vkeyd user ...` 子命令（多用户/admin 模式的运维入口）：
 //
-//	vkeyd user add <username> [--db <path>] [--ttl 30m]
+//	vkeyd user add <username> [--db <path>] [--ttl 30m] [--domain <域名>]
 //	vkeyd user list [--db <path>]
 //	vkeyd user disable <username>|--id <id> [--db <path>]
 //	vkeyd user enable  <username>|--id <id> [--db <path>]
@@ -116,12 +116,13 @@ func runUserAdd(args []string) error {
 	fs := newUserFlagSet("user add")
 	dbPath := fs.String("db", "", "sqlite 数据库路径（必填）")
 	ttl := fs.Duration("ttl", time.Duration(policy.EnrollTTLSeconds)*time.Second, "开户码有效期（Go duration，默认 30m）")
-	flagArgs, positional := splitUserArgs(args, map[string]bool{"db": true, "ttl": true})
+	domain := fs.String("domain", "", "对外域名（生成开户链接用，与 `serve --domain` 同源；缺省输出相对路径）")
+	flagArgs, positional := splitUserArgs(args, map[string]bool{"db": true, "ttl": true, "domain": true})
 	if err := fs.Parse(flagArgs); err != nil {
 		return err
 	}
 	if len(positional) != 1 {
-		return errors.New("user add: 用法 `vkeyd user add <username> [--db <path>] [--ttl 30m]`")
+		return errors.New("user add: 用法 `vkeyd user add <username> [--db <path>] [--ttl 30m] [--domain <域名>]`")
 	}
 	username := positional[0]
 	if err := validateCLIUsername(username); err != nil {
@@ -138,7 +139,7 @@ func runUserAdd(args []string) error {
 	defer func() { _ = st.Close() }()
 
 	ctx := context.Background()
-	if err := userAddRun(ctx, st, username, *ttl, time.Now(), os.Stdout, os.Stderr); err != nil {
+	if err := userAddRun(ctx, st, username, *domain, *ttl, time.Now(), os.Stdout, os.Stderr); err != nil {
 		return err
 	}
 	return nil
@@ -147,7 +148,8 @@ func runUserAdd(args []string) error {
 // userAddRun 执行开户码签发并写出结果（out 为 stdout 形态，hint 为 stderr 提示）。
 //
 // 与 runUserAdd 分离以便测试注入 writer；single 模式在此直接拒绝。
-func userAddRun(ctx context.Context, st *store.Store, username string, ttl time.Duration, now time.Time, out, hint io.Writer) error {
+// domain 为对外域名（可带 scheme），空值时 join_url 退化为相对路径并给出提示。
+func userAddRun(ctx context.Context, st *store.Store, username, domain string, ttl time.Duration, now time.Time, out, hint io.Writer) error {
 	mode, err := st.UserMode(ctx)
 	if err != nil {
 		return fmt.Errorf("user add: 读取用户模式失败: %w", err)
@@ -161,11 +163,16 @@ func userAddRun(ctx context.Context, st *store.Store, username string, ttl time.
 		return fmt.Errorf("user add: %w", err)
 	}
 
-	// stdout 固定 key=value 四行，顺序稳定、便于脚本解析。
+	// stdout 固定 key=value 五行，顺序稳定、便于脚本解析。
 	fmt.Fprintf(out, "username=%s\n", username)
 	fmt.Fprintf(out, "code=%s\n", plain)
 	fmt.Fprintf(out, "code_id=%s\n", code.ID)
 	fmt.Fprintf(out, "expires_at=%d\n", code.ExpiresAt)
+	fmt.Fprintf(out, "join_url=%s\n", joinURL(domain, plain))
+	if strings.TrimSpace(domain) == "" {
+		fmt.Fprintf(hint, "vkeyd: 未指定 --domain，join_url 为相对路径；发给他人的完整链接 = 服务器域名 + join_url"+
+			"（也可加 --domain <域名> 重新执行，口径与 `serve --domain` 一致）\n")
+	}
 
 	// 等价调用示例（本轮不生成网页；客户端也可直接用 code 走 API）。
 	fmt.Fprintf(hint, "vkeyd: 开户码有效期 %s、单次使用；撤销：vkeyd user revoke --db <path> %s\n", ttl, code.ID)
@@ -354,6 +361,21 @@ func runUserRevoke(args []string) error {
 	}
 	fmt.Printf("revoked code_id=%s\n", codeID)
 	return nil
+}
+
+// joinURL 拼接开户落地页链接。
+//
+// domain 空 → 相对路径 `/join?c=<CODE>`（由调用方另行提示补全域名）；
+// 不含 scheme 时默认 https，末尾 `/` 去掉——与 `serve --domain` 的取值口径一致。
+func joinURL(domain, plain string) string {
+	d := strings.TrimSpace(domain)
+	if d == "" {
+		return "/join?c=" + plain
+	}
+	if !strings.Contains(d, "://") {
+		d = "https://" + d
+	}
+	return strings.TrimRight(d, "/") + "/join?c=" + plain
 }
 
 // resolveUserRef 按 `--id <id>` 或位置参数 `<username>` 定位账号（二者必居其一）。

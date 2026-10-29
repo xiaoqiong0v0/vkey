@@ -125,6 +125,52 @@ func (s *Store) RevokeEnrollCode(ctx context.Context, id string, now int64) erro
 	return nil
 }
 
+// EnrollCodeState 是开户码的只读检查结论（/join 落地页用；不消费、不写库）。
+type EnrollCodeState int
+
+const (
+	// EnrollCodeAbsent 表示不存在 / 已使用 / 已撤销（对外统一口径，不区分细节）。
+	EnrollCodeAbsent EnrollCodeState = iota
+	// EnrollCodeActive 表示有效且未使用。
+	EnrollCodeActive
+	// EnrollCodeExpired 表示已过期。
+	EnrollCodeExpired
+)
+
+// PeekEnrollCode 只读检查开户码状态，供 /join 落地页展示；绝不消费或写库。
+//
+// 参数：raw 为开户码原文（内部按 code_hash 规范化比对）；now 为当前 unix 秒。
+// 返回：状态与记录（过期/有效时非 nil，供 TTL 展示；不存在时为 nil）。
+// 并发口径：与 Enroll 事务交错时可能读到「刚被消费」→ Absent，属预期行为。
+func (s *Store) PeekEnrollCode(ctx context.Context, raw string, now int64) (EnrollCodeState, *EnrollCode, error) {
+	plain := NormalizeEnrollCode(raw)
+	if plain == "" {
+		return EnrollCodeAbsent, nil, nil
+	}
+	var (
+		c         EnrollCode
+		usedAt    sql.NullInt64
+		revokedAt sql.NullInt64
+	)
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, username, created_at, expires_at, used_at, revoked_at
+		 FROM enroll_codes WHERE code_hash = ?`, enrollCodeHash(plain)).
+		Scan(&c.ID, &c.Username, &c.CreatedAt, &c.ExpiresAt, &usedAt, &revokedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return EnrollCodeAbsent, nil, nil
+	}
+	if err != nil {
+		return EnrollCodeAbsent, nil, fmt.Errorf("store: 查询开户码状态失败: %w", err)
+	}
+	if usedAt.Valid || revokedAt.Valid {
+		return EnrollCodeAbsent, nil, nil
+	}
+	if c.ExpiresAt <= now {
+		return EnrollCodeExpired, &c, nil
+	}
+	return EnrollCodeActive, &c, nil
+}
+
 // EnrollInput 是一次开户绑定的全部输入（均已在 API 层完成格式校验）。
 type EnrollInput struct {
 	Code           string // 开户码明文（原始输入，内部规范化）
@@ -173,11 +219,11 @@ func (s *Store) Enroll(ctx context.Context, in EnrollInput) (*EnrollOutcome, err
 		return nil, ErrEnrollInvalid
 	}
 	var (
-		codeID     string
-		bound      string
-		expiresAt  int64
-		usedAt     sql.NullInt64
-		revokedAt  sql.NullInt64
+		codeID    string
+		bound     string
+		expiresAt int64
+		usedAt    sql.NullInt64
+		revokedAt sql.NullInt64
 	)
 	err = tx.QueryRowContext(ctx,
 		`SELECT id, username, expires_at, used_at, revoked_at

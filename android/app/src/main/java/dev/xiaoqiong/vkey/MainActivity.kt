@@ -76,6 +76,7 @@ import dev.xiaoqiong.vkey.sync.SyncManager
 import dev.xiaoqiong.vkey.sync.SyncStats
 import dev.xiaoqiong.vkey.totp.Totp
 import dev.xiaoqiong.vkey.ui.IssuerIcon
+import dev.xiaoqiong.vkey.ui.ScanMode
 import dev.xiaoqiong.vkey.ui.clearClipboard
 import dev.xiaoqiong.vkey.ui.copyToClipboard
 import dev.xiaoqiong.vkey.ui.describeFailure
@@ -841,7 +842,9 @@ private fun VaultScreen(
                 onClose = { topPage = VkeyPage.SYNC },
             )
 
+            // 主页 FAB：添加 2FA 条目的入口，只接受 otpauth:// 二维码
             VkeyPage.SCAN -> dev.xiaoqiong.vkey.ui.ScanScreen(
+                mode = ScanMode.TOTP,
                 onResult = { item ->
                     onPersist(vault.copy(items = vault.items + item))
                     topPage = VkeyPage.HOME

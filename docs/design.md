@@ -141,12 +141,20 @@ GET  /api/v1/health
 - `single`（默认）：行为与 M1 完全一致——单账号、`vkeyd init` 开户、无 HTTP 注册。
 - `admin`：**没有任何 HTTP 自助注册**。`POST /auth/token` 只服务已存在账号（重新登录/加设备）；新账号只能由管理员用 CLI 签发一次性开户码后，客户端凭码绑定。
 
-**开户码机制**。`vkeyd user add <username> [--ttl 30m]`（仅 admin 模式，single 下直接拒绝）生成 `ENROLL-XXXX-XXXX`（去混淆字母表，剔除 I/O/0/1），stdout 固定输出 `username= / code= / code_id= / expires_at=` 四行便于脚本解析。存储在新表 `enroll_codes(id, username, code_hash, created_at, expires_at, used_at, revoked_at)`：
+**开户码机制**。`vkeyd user add <username> [--ttl 30m] [--domain <域名>]`（仅 admin 模式，single 下直接拒绝）生成 `ENROLL-XXXX-XXXX`（去混淆字母表，剔除 I/O/0/1），stdout 固定输出 `username= / code= / code_id= / expires_at= / join_url=` 五行便于脚本解析。存储在新表 `enroll_codes(id, username, code_hash, created_at, expires_at, used_at, revoked_at)`：
 
 - **只存 `SHA256(规范化明文)`**（规范化=去空白转大写，比对不区分大小写）；明文不落库、不进日志；
 - 默认 TTL 30 分钟、**单次使用**：`POST /api/v1/auth/enroll` 在**同一事务**内「验码 → 建用户 → 建首设备 → `UPDATE ... WHERE used_at IS NULL` 条件更新消费」，并发提交同一码至多一个成功（条件更新 + `code_hash` 唯一索引，见 `server/ASYNC.md` #10）；
 - 可撤销：`vkeyd user revoke <code_id>`；`vkeyd user list` 会列出待用码；
 - 错误语义：`invalid_code`（不存在/已用/已撤销/用户名绑定不一致，不区分细节）、`code_expired`（410）、`username_taken`（409）、`invalid_verifier`；限流 60/min/IP，与 `auth/token` 同一套中间件。
+
+**开户链接落地页（`GET /join`，2026-10 新增）**。`user add` 的 stdout 新增 `join_url=` 行：给出 `--domain`（口径与 `serve --domain` 一致，缺 scheme 默认 https）时为完整链接 `https://<域名>/join?c=<CODE>`，可直接发给对方；未给出时为相对路径 `/join?c=<CODE>` 并在 stderr 提示补全。对方在浏览器打开后：
+
+- `GET /join?c=<CODE>`（免鉴权，纯 HTML+CSS 无 JS、移动端优先、深浅色自适应）：仅 `user_mode=admin` 且开户码**有效未使用**时 200，页面含同源二维码（`/join/qr.png?c=…`）、明文开户码（便于手抄）、主按钮「打开 vkey App」（深链 `vkey://enroll?server=<地址>&code=<CODE>`，地址来源同 `serverURL`：`--domain` 优先、否则 Host+X-Forwarded-Proto）、次按钮「下载二维码」（同一 QR 端点，`Content-Disposition: attachment`）与说明文字（按实际签发 TTL 显示有效期、单次使用、master_key 只在本机生成）。
+- `GET /join/qr.png?c=<CODE>`：`image/png`（`skip2/go-qrcode`，内容为深链）+ `Content-Disposition: attachment; filename="vkey-enroll.png"`。
+- **统一失效口径**：缺参数 400；非 admin 模式、码不存在/已用/已撤销/过期一律 404，文案固定「链接无效或已过期」，不回显输入、不泄露「码是否存在」的差异（防枚举）。
+- **脱敏与缓存**：开户码在 query 里，属一次性凭据——访问日志对 `/join*` **只记路径不记 query**（`internal/api/api.go:safeURI`）；响应头 `Cache-Control: no-store` + `Referrer-Policy: no-referrer` + `X-Content-Type-Options: nosniff`；页面/日志/二维码均不出现 master_key、verifier、token。
+- **只读不消费**：落地页经 `store.PeekEnrollCode` 只读校验状态，打开页面/取二维码不会烧掉开户码；消费仍只发生在 `POST /api/v1/auth/enroll` 事务内（`server/ASYNC.md` #14）。
 
 **零知识边界（开户路径）**。客户端本地生成 32B `master_key`，上送 `verifier = HKDF-SHA256(master_key, salt="vkey-verifier", info=username)`；**服务端永远接触不到 master_key**，与既有配对协议同一口径。可选携带 `pw_salt + wrapped_key`（主密码包裹，规则与 `POST /auth/password` 一致），`verifier` 本身不可反推 `master_key`。响应 `{device_id, token, user_id, username}`，token 与 `/auth/token` 同语义（服务端只存 `SHA256(token)`）。
 

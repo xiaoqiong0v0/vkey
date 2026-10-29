@@ -109,6 +109,8 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /{$}", s.handleIndex)
 	mux.HandleFunc("GET /pair", s.handlePairRedirect)
 	mux.HandleFunc("GET /pair/qr.png", s.handlePairQR)
+	mux.HandleFunc("GET "+joinPagePath, s.handleJoin)
+	mux.HandleFunc("GET "+joinQRPath, s.handleJoinQR)
 	mux.HandleFunc("GET /install.sh", s.handleInstallSH)
 	mux.HandleFunc("GET /install.ps1", s.handleInstallPS1)
 	mux.HandleFunc("GET /dl/{name}", s.handleArtifact)
@@ -129,12 +131,14 @@ func (s *Server) withCommon(next http.Handler) http.Handler {
 					writeErr(sw, http.StatusInternalServerError, "internal", "服务端内部错误")
 				}
 			}
-			s.logger.Printf("%s %s -> %d (%s)", r.Method, r.URL.RequestURI(), sw.status, time.Since(start).Round(time.Millisecond))
+			s.logger.Printf("%s %s -> %d (%s)", r.Method, safeURI(r), sw.status, time.Since(start).Round(time.Millisecond))
 		}()
 
 		sw.Header().Set("X-Content-Type-Options", "nosniff")
 		sw.Header().Set("Referrer-Policy", "no-referrer")
-		if strings.HasPrefix(r.URL.Path, "/api/") {
+		// /join* 的一次性开户码在 query 里：禁缓存 + 日志脱敏（safeURI 只记路径）。
+		if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == joinPagePath ||
+			strings.HasPrefix(r.URL.Path, joinPagePath+"/") {
 			sw.Header().Set("Cache-Control", "no-store")
 		}
 		// /dl/* 只接受白名单里的单段文件名：含 "." / ".." 段或反斜杠的路径

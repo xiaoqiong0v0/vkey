@@ -213,22 +213,36 @@
     <string name="scan_err_image_decode">图片识别失败：%1$s</string>
     <string name="scan_err_image_read">读取图片失败：%1$s</string>
     <string name="scan_err_camera_start">相机启动失败：%1$s</string>
+    <string name="scan_title_server">扫描服务端地址二维码</string>
+    <string name="scan_title_enroll">扫描开户码</string>
+    <string name="scan_title_pair">扫描配对码</string>
     <string name="scan_title_totp">扫描 Authenticator 二维码</string>
-    <string name="scan_title_config">扫描同步配置 / 配对二维码</string>
+    <string name="scan_title_auto">扫描二维码</string>
+    <string name="scan_hint_server">内容应是一个 http(s) 地址（服务端主页或 /pair 页的二维码）</string>
+    <string name="scan_hint_enroll">内容形如 ENROLL-XXXX-XXXX</string>
+    <string name="scan_hint_pair">52 位配对码，或服务端配对页的二维码</string>
     <string name="scan_hint_totp">把二维码放进框内，识别后会自动添加</string>
-    <string name="scan_hint_config">把二维码放进框内，识别后自动填入</string>
+    <string name="scan_hint_auto">把二维码放进框内，会自动识别</string>
     <string name="scan_pick_from_album">从相册选择二维码</string>
     <string name="scan_paste_link">粘贴链接</string>
     <string name="scan_dialog_paste_otpauth_title">粘贴 otpauth 链接</string>
     <string name="scan_dialog_paste_config_title">粘贴链接或配对码</string>
+    <string name="scan_dialog_paste_enroll_title">粘贴开户码</string>
     <string name="scan_paste_otpauth_hint">形如 otpauth://totp/Issuer:acct?secret=XXXX</string>
+    <string name="scan_paste_server_hint">http(s):// 地址，或 vkey://config?server=https://… 链接</string>
+    <string name="scan_paste_enroll_hint">形如 ENROLL-XXXX-XXXX（大小写与空格均可）</string>
+    <string name="scan_paste_pair_hint">52 位配对码、vkey://pair?code=… 链接，或服务端地址</string>
     <string name="scan_paste_config_hint">形如 vkey://config?server=https://… 或 vkey://pair?code=…，也可直接粘贴 52 位配对码</string>
     <string name="scan_err_empty">内容为空</string>
+    <string name="scan_err_not_server_qr">这不是服务端地址二维码</string>
+    <string name="scan_err_not_enroll_code">这不是开户码</string>
+    <string name="scan_err_not_pair_code">这不是配对码</string>
+    <string name="scan_err_not_2fa_qr">这不是 2FA 二维码</string>
+    <string name="scan_err_unrecognized">未识别的内容</string>
     <string name="scan_err_config_qr_wrong_page">这是同步配置二维码，请在「设置 → 同步配置」里扫描</string>
     <string name="scan_err_pair_code_wrong_page">这是设备配对码，请在「设置 → 同步配置」里使用</string>
     <string name="scan_err_enroll_code_wrong_page">这是开户码，请在「设置 → 用开户码接入」里使用</string>
-    <string name="scan_err_not_otpauth">二维码不是有效的 otpauth:// 链接</string>
-    <string name="scan_err_not_config_qr">不是同步配置 / 配对二维码</string>
+    <string name="scan_err_totp_wrong_page">这是 2FA 二维码，请从主页扫码添加</string>
 
     <!-- ============ 二维码（无障碍描述） ============ -->
     <string name="qr_code_content_description">二维码</string>

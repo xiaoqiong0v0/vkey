@@ -212,22 +212,36 @@
     <string name="scan_err_image_decode">Image scan failed: %1$s</string>
     <string name="scan_err_image_read">Could not read image: %1$s</string>
     <string name="scan_err_camera_start">Camera failed to start: %1$s</string>
+    <string name="scan_title_server">Scan a server address QR code</string>
+    <string name="scan_title_enroll">Scan an enrollment code</string>
+    <string name="scan_title_pair">Scan a pairing code</string>
     <string name="scan_title_totp">Scan an Authenticator QR code</string>
-    <string name="scan_title_config">Scan a sync or pairing QR code</string>
+    <string name="scan_title_auto">Scan QR code</string>
+    <string name="scan_hint_server">The content should be an http(s) address (the QR code on the server home or /pair page)</string>
+    <string name="scan_hint_enroll">The content looks like ENROLL-XXXX-XXXX</string>
+    <string name="scan_hint_pair">A 52-character pairing code, or the QR code on the server pairing page</string>
     <string name="scan_hint_totp">Place the QR code inside the frame; it is added automatically</string>
-    <string name="scan_hint_config">Place the QR code inside the frame; it is filled in automatically</string>
+    <string name="scan_hint_auto">Place the QR code inside the frame; it is recognized automatically</string>
     <string name="scan_pick_from_album">Pick QR code from gallery</string>
     <string name="scan_paste_link">Paste link</string>
     <string name="scan_dialog_paste_otpauth_title">Paste otpauth link</string>
     <string name="scan_dialog_paste_config_title">Paste link or pairing code</string>
+    <string name="scan_dialog_paste_enroll_title">Paste enrollment code</string>
     <string name="scan_paste_otpauth_hint">For example otpauth://totp/Issuer:acct?secret=XXXX</string>
+    <string name="scan_paste_server_hint">An http(s):// address, or a vkey://config?server=https://… link</string>
+    <string name="scan_paste_enroll_hint">For example ENROLL-XXXX-XXXX (case and spaces are tolerated)</string>
+    <string name="scan_paste_pair_hint">A 52-character pairing code, a vkey://pair?code=… link, or a server address</string>
     <string name="scan_paste_config_hint">For example vkey://config?server=https://… or vkey://pair?code=…, or paste a 52-character pairing code</string>
     <string name="scan_err_empty">Content is empty</string>
+    <string name="scan_err_not_server_qr">This is not a server address QR code</string>
+    <string name="scan_err_not_enroll_code">This is not an enrollment code</string>
+    <string name="scan_err_not_pair_code">This is not a pairing code</string>
+    <string name="scan_err_not_2fa_qr">This is not a 2FA QR code</string>
+    <string name="scan_err_unrecognized">Unrecognized content</string>
     <string name="scan_err_config_qr_wrong_page">This is a sync QR code; scan it under Settings → Sync</string>
     <string name="scan_err_pair_code_wrong_page">This is a device pairing code; use it under Settings → Sync</string>
     <string name="scan_err_enroll_code_wrong_page">This is an enrollment code; use it under Settings → Connect with an enrollment code</string>
-    <string name="scan_err_not_otpauth">QR code is not a valid otpauth:// link</string>
-    <string name="scan_err_not_config_qr">Not a sync or pairing QR code</string>
+    <string name="scan_err_totp_wrong_page">This is a 2FA QR code; scan it from the home page to add it</string>
 
     <!-- ============ QR code (accessibility) ============ -->
     <string name="qr_code_content_description">QR code</string>

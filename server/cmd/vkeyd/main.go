@@ -6,7 +6,7 @@
 //	vkeyd serve  --db <path> --listen :8080 [--domain <域名>] [--artifacts-dir <dir>] [--set-require-master-pw=true|false]
 //	vkeyd policy set --db <path> [--require-master-pw=<bool>] [--user-mode=single|admin]
 //	                           [--max-items-per-user=<n>] [--max-bytes-per-user=<n|20MiB>] [--max-devices-per-user=<n>]
-//	vkeyd user add <username> --db <path> [--ttl 30m]
+//	vkeyd user add <username> --db <path> [--ttl 30m] [--domain <域名>]
 //	vkeyd user list --db <path>
 //	vkeyd user disable|enable <username>|--id <id> --db <path>
 //	vkeyd user delete <username>|--id <id> --db <path> [--yes]
@@ -477,7 +477,7 @@ func usage(w *os.File) {
   vkeyd serve  --db <path> --listen :8080 [--domain <域名>] [--artifacts-dir <dir>] [--set-require-master-pw=true|false]
   vkeyd policy set --db <path> [--require-master-pw=<bool>] [--user-mode=single|admin]
                              [--max-items-per-user=<n>] [--max-bytes-per-user=<n|20MiB>] [--max-devices-per-user=<n>]
-  vkeyd user add <username> --db <path> [--ttl 30m]
+   vkeyd user add <username> --db <path> [--ttl 30m] [--domain <域名>]
   vkeyd user list --db <path>
   vkeyd user disable|enable <username>|--id <id> --db <path>
   vkeyd user delete <username>|--id <id> --db <path> [--yes]
@@ -490,8 +490,9 @@ func usage(w *os.File) {
   policy 修改服务端策略（主密码、用户模式、每用户配额；-1 表示不限制）
   user   多用户运维（仅 user_mode=admin 生效）：
          add     签发一次性开户码（默认 30 分钟、单次使用），stdout 为
-                 username=/code=/code_id=/expires_at= 四行，便于脚本解析；
-                 single 模式下直接拒绝
+                  username=/code=/code_id=/expires_at=/join_url= 五行，便于脚本解析；
+                  --domain 指定对外域名时 join_url 为完整链接（可直接发给对方），
+                  否则为相对路径并提示补全；single 模式下直接拒绝
          list    列出账号（含设备/条目计数）与待用开户码
          disable 停用账号：其全部设备立即 401，数据保留；enable 恢复
          delete  级联删除 items/devices/pairs 等；不带 --yes 只打印将删除的行数

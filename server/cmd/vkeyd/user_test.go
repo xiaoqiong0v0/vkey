@@ -32,7 +32,7 @@ func newCLIStore(t *testing.T) *store.Store {
 func TestUserAddRejectedInSingleMode(t *testing.T) {
 	st := newCLIStore(t)
 	var out, hint bytes.Buffer
-	err := userAddRun(context.Background(), st, "alice", time.Minute, time.Now(), &out, &hint)
+	err := userAddRun(context.Background(), st, "alice", "", time.Minute, time.Now(), &out, &hint)
 	if err == nil || !strings.Contains(err.Error(), "single") {
 		t.Fatalf("single 模式应被拒绝并提示，实际 err=%v", err)
 	}
@@ -54,12 +54,12 @@ func TestUserAddRunEmitsParsableOutput(t *testing.T) {
 	}
 	var out, hint bytes.Buffer
 	now := time.Unix(1_800_000_000, 0)
-	if err := userAddRun(ctx, st, "alice", time.Hour, now, &out, &hint); err != nil {
+	if err := userAddRun(ctx, st, "alice", "", time.Hour, now, &out, &hint); err != nil {
 		t.Fatalf("userAddRun: %v", err)
 	}
 	lines := strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
-	if len(lines) != 4 {
-		t.Fatalf("应恰好 4 行，实际:\n%s", out.String())
+	if len(lines) != 5 {
+		t.Fatalf("应恰好 5 行，实际:\n%s", out.String())
 	}
 	fields := map[string]string{}
 	for _, ln := range lines {
@@ -82,6 +82,13 @@ func TestUserAddRunEmitsParsableOutput(t *testing.T) {
 	if fields["code_id"] == "" {
 		t.Fatal("缺少 code_id")
 	}
+	// 未给 --domain：join_url 为相对路径，且 stderr 给出补全提示。
+	if fields["join_url"] != "/join?c="+fields["code"] {
+		t.Fatalf("join_url=%q（应为相对路径）", fields["join_url"])
+	}
+	if !strings.Contains(hint.String(), "--domain") {
+		t.Fatalf("缺域名时提示应提到 --domain:\n%s", hint.String())
+	}
 	// 提示（stderr）里应给出等价 curl 调用。
 	if !strings.Contains(hint.String(), "curl") || !strings.Contains(hint.String(), fields["code"]) {
 		t.Fatalf("stderr 提示缺少等价调用:\n%s", hint.String())
@@ -90,6 +97,47 @@ func TestUserAddRunEmitsParsableOutput(t *testing.T) {
 	codes, err := st.ListPendingEnrollCodes(ctx)
 	if err != nil || len(codes) != 1 || codes[0].Username != "alice" {
 		t.Fatalf("待用 code 异常: %+v err=%v", codes, err)
+	}
+}
+
+// TestUserAddJoinURL 校验 --domain 生成的完整开户链接与 joinURL 的取值口径。
+func TestUserAddJoinURL(t *testing.T) {
+	st := newCLIStore(t)
+	ctx := context.Background()
+	if err := st.SetUserMode(ctx, policy.UserModeAdmin); err != nil {
+		t.Fatal(err)
+	}
+	var out, hint bytes.Buffer
+	if err := userAddRun(ctx, st, "bob", "vkey.example.com", time.Hour, time.Now(), &out, &hint); err != nil {
+		t.Fatalf("userAddRun: %v", err)
+	}
+	code := ""
+	for _, ln := range strings.Split(out.String(), "\n") {
+		if k, v, ok := strings.Cut(ln, "="); ok && k == "code" {
+			code = v
+		}
+	}
+	if code == "" {
+		t.Fatalf("输出缺少 code 行:\n%s", out.String())
+	}
+	if want := "https://vkey.example.com/join?c=" + code; !strings.Contains(out.String(), want) {
+		t.Fatalf("join_url 应为完整链接 %q:\n%s", want, out.String())
+	}
+	if strings.Contains(hint.String(), "--domain") {
+		t.Fatalf("已给 --domain 时不应再提示缺域名:\n%s", hint.String())
+	}
+
+	cases := []struct{ domain, plain, want string }{
+		{"", "ENROLL-ABCD-2345", "/join?c=ENROLL-ABCD-2345"},
+		{"  ", "ENROLL-ABCD-2345", "/join?c=ENROLL-ABCD-2345"},
+		{"vkey.example.com", "ENROLL-ABCD-2345", "https://vkey.example.com/join?c=ENROLL-ABCD-2345"},
+		{"http://127.0.0.1:3151/", "ENROLL-ABCD-2345", "http://127.0.0.1:3151/join?c=ENROLL-ABCD-2345"},
+		{"https://vkey.example.com", "ENROLL-ABCD-2345", "https://vkey.example.com/join?c=ENROLL-ABCD-2345"},
+	}
+	for _, c := range cases {
+		if got := joinURL(c.domain, c.plain); got != c.want {
+			t.Fatalf("joinURL(%q) = %q，期望 %q", c.domain, got, c.want)
+		}
 	}
 }
 

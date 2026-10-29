@@ -71,12 +71,14 @@ go run ./cmd/vkeyd purge --db ../.tmp/scratch/vkey.db --yes
 # 1) 切换到 admin 模式
 go run ./cmd/vkeyd policy set --db ../.tmp/scratch/vkey.db --user-mode=admin
 
-# 2) 开户：签发一次性开户码（默认 30 分钟；stdout 为固定 key=value 四行）
-go run ./cmd/vkeyd user add alice --db ../.tmp/scratch/vkey.db
+# 2) 开户：签发一次性开户码（默认 30 分钟；stdout 为固定 key=value 五行）
+go run ./cmd/vkeyd user add alice --db ../.tmp/scratch/vkey.db --domain vkey.example.com
 #   username=alice
 #   code=ENROLL-XXXX-XXXX
 #   code_id=<可撤销用的 id>
 #   expires_at=<unix 秒>
+#   join_url=https://vkey.example.com/join?c=ENROLL-XXXX-XXXX   ← 可直接发给对方的开户链接
+# 不带 --domain 时 join_url 为相对路径 /join?c=…（stderr 提示补全域名）
 
 # 3) 客户端凭码绑定（verifier=HKDF(master_key,"alice")，本地算）：
 curl -X POST https://<server>/api/v1/auth/enroll -H 'Content-Type: application/json' \
@@ -239,6 +241,12 @@ vkeyd 只监听 `127.0.0.1:3150`，TLS 由 nginx 终止（实测 nginx/1.18.0）
   `/install.ps1` 均为纯展示/模板，不含解密逻辑；`GET /pair` 仅 301 跳转到 `/`（保留老链接）；
   `/pair/qr.png` 只编码 `vkey://config?server=<地址>`（仅地址，无配对码/主密钥）；
   `/dl/*` 只做白名单静态分发（白名单来自产物目录的 `SHA256SUMS`）。
+- **开户落地页 `/join`**：`GET /join?c=<开户码>` 与 `GET /join/qr.png?c=<开户码>` 仅在
+  `user_mode=admin` 且码有效未用时返回 200，其余情况统一 4xx + 同一文案「链接无效或已过期」
+  （不区分不存在/已用/过期，防枚举）。开户码在 query 里，属一次性凭据：
+  **访问日志对 `/join*` 只记路径、不记 query**（`internal/api/api.go` 的 `safeURI`），
+  页面/二维码只含地址与开户码，绝无 master_key/token；响应头 `Cache-Control: no-store`。
+  打开页面**不消费**开户码（只读 `PeekEnrollCode`），消费仍只在 `POST /api/v1/auth/enroll`。
 - 速率限制为进程内固定窗口（60 次/分钟/IP，作用于 `auth/token` 与 `pair/claim`），
   重启清零；多实例部署需上移到 nginx。
 

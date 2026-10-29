@@ -113,7 +113,6 @@
     <!-- Collapsible cards: title + collapsed-state summary + expand/collapse accessibility labels -->
     <string name="section_server_address">Server address</string>
     <string name="enroll_card_new_account">Connect a new account</string>
-    <string name="enroll_card_current">Current: %1$s</string>
     <string name="state_expanded">Expanded</string>
     <string name="state_collapsed">Collapsed</string>
     <string name="section_item_sync">Item sync</string>

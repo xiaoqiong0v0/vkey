@@ -106,6 +106,9 @@ private enum class ConfirmKind { NONE, CLEAR_DEVICE, ENROLL }
  *
  * 所有网络与密码学操作都在 IO 线程执行，结果通过 [onSaved] 落盘。
  *
+ * 区块可见性按「是否已配置」切换：`device == null` 才显示「服务端地址」「用开户码接入」两张卡片，
+ * 已配置时隐藏（换服务器 / 换账号请先解除绑定），解除绑定后随状态变化立即恢复。
+ *
  * @param masterKey 当前库的 master_key（base32），用于生成配对码与校正账号密钥
  * @param device 已保存的设备材料；null 表示未配置
  * @param hasLocalItems 本地是否已有未删除的条目（开户码接入前需要二次确认）
@@ -490,115 +493,131 @@ fun SyncScreen(
                         Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                     }
 
-                    // ---------------- 服务器地址（可折叠卡片） ----------------
-                    // 折叠态摘要：已配置显示地址本身（过长中间省略），未配置显示「未配置」
-                    val addressText = url.trim().ifEmpty { device?.server_url.orEmpty() }
-                    val serverSummary = if (addressText.isEmpty()) {
-                        stringResource(R.string.status_not_configured)
-                    } else {
-                        middleEllipsis(addressText)
-                    }
-                    CollapsibleCard(
-                        title = stringResource(R.string.section_server_address),
-                        summary = serverSummary,
-                        expanded = serverCardExpanded,
-                        onToggle = { serverCardExpanded = !serverCardExpanded },
+                    // ---------------- 未配置专属入口：服务端地址 + 开户码接入 ----------------
+                    // 这两个入口只在「尚未配对/登录」时有意义；已配置后换服务器或换账号请先解除绑定，
+                    // 解除绑定（device 变 null）后立即恢复显示，无需重启。展开/收起转场沿用现有动画且不裁剪。
+                    AnimatedVisibility(
+                        visible = device == null,
+                        enter = expandVertically(
+                            animationSpec = tween(durationMillis = PAGE_TRANSITION_MS),
+                            clip = false,
+                        ) + fadeIn(tween(durationMillis = PAGE_TRANSITION_MS)),
+                        exit = shrinkVertically(
+                            animationSpec = tween(durationMillis = PAGE_TRANSITION_MS),
+                            clip = false,
+                        ) + fadeOut(tween(durationMillis = PAGE_TRANSITION_MS)),
                     ) {
-                        OutlinedTextField(
-                            value = url,
-                            onValueChange = { url = it },
-                            label = { Text(stringResource(R.string.label_sync_server_url)) },
-                            // 未配置时只给占位示例，不预填任何真实域名
-                            placeholder = {
-                                if (url.isEmpty()) {
-                                    Text(stringResource(R.string.placeholder_server_url))
-                                }
-                            },
-                            singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                        Column(
                             modifier = Modifier.fillMaxWidth(),
-                        )
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
                         ) {
-                            Button(
-                                onClick = {
-                                    if (requireValidAddress()) {
-                                        onServerUrlChange(url.trim())
-                                        info = context.getString(R.string.info_server_saved)
-                                    }
-                                },
-                                enabled = busy == null && url.trim().isNotEmpty(),
-                                modifier = Modifier.weight(1f),
-                            ) { Text(stringResource(R.string.action_save_address)) }
-                            Button(
-                                onClick = { showScan = true },
-                                enabled = busy == null,
-                                modifier = Modifier.weight(1f),
-                            ) { Text(stringResource(R.string.action_scan)) }
-                        }
-                        Text(
-                            stringResource(R.string.sync_scan_hint),
-                            style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.padding(top = 4.dp),
-                        )
-                    }
+                            // ---------- 服务器地址（可折叠卡片） ----------
+                            // 折叠态摘要：地址为空显示「未配置」（过长中间省略），否则显示地址本身
+                            val addressText = url.trim()
+                            val serverSummary = if (addressText.isEmpty()) {
+                                stringResource(R.string.status_not_configured)
+                            } else {
+                                middleEllipsis(addressText)
+                            }
+                            CollapsibleCard(
+                                title = stringResource(R.string.section_server_address),
+                                summary = serverSummary,
+                                expanded = serverCardExpanded,
+                                onToggle = { serverCardExpanded = !serverCardExpanded },
+                            ) {
+                                OutlinedTextField(
+                                    value = url,
+                                    onValueChange = { url = it },
+                                    label = { Text(stringResource(R.string.label_sync_server_url)) },
+                                    // 未配置时只给占位示例，不预填任何真实域名
+                                    placeholder = {
+                                        if (url.isEmpty()) {
+                                            Text(stringResource(R.string.placeholder_server_url))
+                                        }
+                                    },
+                                    singleLine = true,
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Button(
+                                        onClick = {
+                                            if (requireValidAddress()) {
+                                                onServerUrlChange(url.trim())
+                                                info = context.getString(R.string.info_server_saved)
+                                            }
+                                        },
+                                        enabled = busy == null && url.trim().isNotEmpty(),
+                                        modifier = Modifier.weight(1f),
+                                    ) { Text(stringResource(R.string.action_save_address)) }
+                                    Button(
+                                        onClick = { showScan = true },
+                                        enabled = busy == null,
+                                        modifier = Modifier.weight(1f),
+                                    ) { Text(stringResource(R.string.action_scan)) }
+                                }
+                                Text(
+                                    stringResource(R.string.sync_scan_hint),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    modifier = Modifier.padding(top = 4.dp),
+                                )
+                            }
 
-                    // ---------------- 用开户码接入（多用户实例注册入口，可折叠卡片） ----------------
-                    CollapsibleCard(
-                        title = stringResource(R.string.section_enroll),
-                        summary = if (device == null) {
-                            stringResource(R.string.enroll_card_new_account)
-                        } else {
-                            stringResource(R.string.enroll_card_current, device.username)
-                        },
-                        expanded = enrollCardExpanded,
-                        onToggle = { enrollCardExpanded = !enrollCardExpanded },
-                    ) {
-                        Text(
-                            stringResource(R.string.enroll_desc),
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        OutlinedTextField(
-                            value = enrollCodeInput,
-                            onValueChange = { enrollCodeInput = it },
-                            label = { Text(stringResource(R.string.label_enroll_code)) },
-                            singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        OutlinedTextField(
-                            value = enrollUsernameInput,
-                            onValueChange = { enrollUsernameInput = it },
-                            label = { Text(stringResource(R.string.label_enroll_username)) },
-                            singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        OutlinedTextField(
-                            value = deviceName,
-                            onValueChange = { deviceName = it },
-                            label = { Text(stringResource(R.string.label_device_name)) },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(
-                                onClick = doEnroll,
-                                enabled = busy == null,
-                                modifier = Modifier.weight(1f),
-                            ) { Text(stringResource(R.string.action_enroll)) }
-                            Button(
-                                onClick = { showScan = true },
-                                enabled = busy == null,
-                                modifier = Modifier.weight(1f),
-                            ) { Text(stringResource(R.string.action_scan_input)) }
+                            // ---------- 用开户码接入（多用户实例注册入口，可折叠卡片） ----------
+                            CollapsibleCard(
+                                title = stringResource(R.string.section_enroll),
+                                summary = stringResource(R.string.enroll_card_new_account),
+                                expanded = enrollCardExpanded,
+                                onToggle = { enrollCardExpanded = !enrollCardExpanded },
+                            ) {
+                                Text(
+                                    stringResource(R.string.enroll_desc),
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                                Spacer(Modifier.height(8.dp))
+                                OutlinedTextField(
+                                    value = enrollCodeInput,
+                                    onValueChange = { enrollCodeInput = it },
+                                    label = { Text(stringResource(R.string.label_enroll_code)) },
+                                    singleLine = true,
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                                Spacer(Modifier.height(8.dp))
+                                OutlinedTextField(
+                                    value = enrollUsernameInput,
+                                    onValueChange = { enrollUsernameInput = it },
+                                    label = { Text(stringResource(R.string.label_enroll_username)) },
+                                    singleLine = true,
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                                Spacer(Modifier.height(8.dp))
+                                OutlinedTextField(
+                                    value = deviceName,
+                                    onValueChange = { deviceName = it },
+                                    label = { Text(stringResource(R.string.label_device_name)) },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                                Spacer(Modifier.height(8.dp))
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Button(
+                                        onClick = doEnroll,
+                                        enabled = busy == null,
+                                        modifier = Modifier.weight(1f),
+                                    ) { Text(stringResource(R.string.action_enroll)) }
+                                    Button(
+                                        onClick = { showScan = true },
+                                        enabled = busy == null,
+                                        modifier = Modifier.weight(1f),
+                                    ) { Text(stringResource(R.string.action_scan_input)) }
+                                }
+                            }
                         }
                     }
 

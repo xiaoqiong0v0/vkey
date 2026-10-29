@@ -114,7 +114,6 @@
     <!-- 可折叠卡片：标题 + 折叠态状态摘要 + 展开/收起无障碍描述 -->
     <string name="section_server_address">服务端地址</string>
     <string name="enroll_card_new_account">接入新账号</string>
-    <string name="enroll_card_current">当前：%1$s</string>
     <string name="state_expanded">已展开</string>
     <string name="state_collapsed">已收起</string>
     <string name="section_item_sync">条目同步</string>

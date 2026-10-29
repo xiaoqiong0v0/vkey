@@ -436,31 +436,6 @@ fun SyncScreen(
                         }
                     }
 
-                    // ---------------- 本机设备名（全局唯一输入入口） ----------------
-                    // 设备名只在这里编辑：登录 / 配对 / 开户各入口共用同一个 deviceName 状态。
-                    // 已配对时只改内存值，不写回服务端记录，仅在下次登录 / 配对时生效。
-                    Card(Modifier.fillMaxWidth()) {
-                        Column(Modifier.padding(16.dp)) {
-                            Text(
-                                stringResource(R.string.section_device_name),
-                                style = MaterialTheme.typography.titleMedium,
-                            )
-                            Spacer(Modifier.height(4.dp))
-                            OutlinedTextField(
-                                value = deviceName,
-                                onValueChange = { deviceName = it },
-                                label = { Text(stringResource(R.string.label_device_name)) },
-                                singleLine = true,
-                                modifier = Modifier.fillMaxWidth(),
-                            )
-                            Text(
-                                stringResource(R.string.device_name_desc),
-                                style = MaterialTheme.typography.bodySmall,
-                                modifier = Modifier.padding(top = 4.dp),
-                            )
-                        }
-                    }
-
                     // ---------------- 安全 ----------------
                     Card(Modifier.fillMaxWidth()) {
                         Row(
@@ -530,7 +505,7 @@ fun SyncScreen(
                         Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                     }
 
-                    // ---------------- 未配置专属入口：服务端地址 + 开户码接入 ----------------
+                    // ---------------- 未配置专属入口：服务端地址 + 本机设备名 + 开户码接入 ----------------
                     // 这两个入口只在「尚未配对/登录」时有意义；已配置后换服务器或换账号请先解除绑定，
                     // 解除绑定（device 变 null）后立即恢复显示，无需重启。展开/收起转场沿用现有动画且不裁剪。
                     AnimatedVisibility(
@@ -605,6 +580,31 @@ fun SyncScreen(
                                     style = MaterialTheme.typography.bodySmall,
                                     modifier = Modifier.padding(top = 4.dp),
                                 )
+                            }
+
+                            // ---------- 本机设备名（全局唯一输入入口） ----------
+                            // 设备名只在这里编辑：登录 / 配对 / 开户各入口共用同一个 deviceName 状态。
+                            // 仅在未配置时显示（已配置后状态卡里会展示「设备：xxx」），解除绑定后自动恢复。
+                            Card(Modifier.fillMaxWidth()) {
+                                Column(Modifier.padding(16.dp)) {
+                                    Text(
+                                        stringResource(R.string.section_device_name),
+                                        style = MaterialTheme.typography.titleMedium,
+                                    )
+                                    Spacer(Modifier.height(4.dp))
+                                    OutlinedTextField(
+                                        value = deviceName,
+                                        onValueChange = { deviceName = it },
+                                        label = { Text(stringResource(R.string.label_device_name)) },
+                                        singleLine = true,
+                                        modifier = Modifier.fillMaxWidth(),
+                                    )
+                                    Text(
+                                        stringResource(R.string.device_name_desc),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        modifier = Modifier.padding(top = 4.dp),
+                                    )
+                                }
                             }
 
                             // ---------- 用开户码接入（多用户实例注册入口，可折叠卡片） ----------

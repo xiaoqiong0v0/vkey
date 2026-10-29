@@ -76,6 +76,12 @@ internal class FaviconMemoryCache<V : Any>(
         failures[key] = clock() + failureTtlMs
     }
 
+    /** 清空全部失败静默期（同步拉到新条目后调用，让新条目的图标立刻可重试）。 */
+    @Synchronized
+    fun clearFailures() {
+        failures.clear()
+    }
+
     /** 统一键：去空白 + 小写（域名本身大小写不敏感）。 */
     private fun keyOf(domain: String): String = domain.trim().lowercase()
 
@@ -84,8 +90,8 @@ internal class FaviconMemoryCache<V : Any>(
         /** 内存条目上限（列表通常几十条）。 */
         internal const val DEFAULT_MAX_ENTRIES: Int = 64
 
-        /** 失败记录有效期：6 小时。 */
-        internal const val DEFAULT_FAILURE_TTL_MS: Long = 6L * 60 * 60 * 1000
+        /** 失败记录有效期：5 分钟（过长会导致新条目的图标在重启前一直缺失）。 */
+        internal const val DEFAULT_FAILURE_TTL_MS: Long = 5L * 60 * 1000
 
         /** 负载因子。 */
         private const val LOAD_FACTOR: Float = 0.75f
@@ -120,5 +126,10 @@ object FaviconCache {
     /** 标记该域名抓取失败。 */
     fun markFailed(domain: String) {
         cache.markFailed(domain)
+    }
+
+    /** 清空全部失败静默期（同步拉到新条目后调用，让新条目的图标立刻可重试）。 */
+    fun clearFailures() {
+        cache.clearFailures()
     }
 }

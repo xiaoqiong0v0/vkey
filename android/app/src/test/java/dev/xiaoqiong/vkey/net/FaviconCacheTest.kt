@@ -63,8 +63,8 @@ class FaviconCacheTest {
     }
 
     @Test
-    fun failureTtlIsSixHours() {
-        assertEquals(6L * 60 * 60 * 1000, FaviconMemoryCache.DEFAULT_FAILURE_TTL_MS)
+    fun failureTtlIsFiveMinutes() {
+        assertEquals(5L * 60 * 1000, FaviconMemoryCache.DEFAULT_FAILURE_TTL_MS)
     }
 
     @Test

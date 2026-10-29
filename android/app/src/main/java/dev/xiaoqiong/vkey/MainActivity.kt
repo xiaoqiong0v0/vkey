@@ -1167,6 +1167,8 @@ private fun VaultScreen(
                 )
                 onPersist(merged)
                 lastSyncError = null
+                // 同步可能带来新条目：清掉图标的失败静默期，让新条目的 favicon 立刻可重试
+                dev.xiaoqiong.vkey.net.FaviconCache.clearFailures()
                 outcome.stats
             } catch (t: Throwable) {
                 lastSyncError = describeFailure(context, t)

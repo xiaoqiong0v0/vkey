@@ -27,6 +27,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import dev.xiaoqiong.vkey.net.FaviconCache
+import kotlinx.coroutines.delay
 import dev.xiaoqiong.vkey.net.FaviconFetcher
 import dev.xiaoqiong.vkey.net.IssuerDomains
 import dev.xiaoqiong.vkey.ui.theme.IssuerBadgeColors
@@ -36,6 +37,9 @@ private val ICON_SIZE: Dp = 40.dp
 
 /** 圆角：字母徽标与抓到的图标保持一致。 */
 private val ICON_CORNER: Dp = 12.dp
+
+/** 图标拉取失败后的重试间隔（略大于负缓存 5 分钟，避免立刻重试仍被拦）。 */
+private const val ICON_RETRY_DELAY_MS: Long = 5L * 60 * 1000 + 1_000L
 
 /** 字母字号相对图标边长的比例。 */
 private const val INITIAL_TEXT_RATIO: Float = 0.42f
@@ -67,8 +71,13 @@ fun IssuerIcon(issuer: String, label: String, size: Dp = ICON_SIZE) {
 
     LaunchedEffect(issuer, domain) {
         if (domain == null) return@LaunchedEffect
-        favicon = FaviconFetcher.load(appContext, domain)
-        awaitingDisk = false
+        // 失败后按负缓存有效期重试（最多 3 次）：同步拉到的新条目不必重启 App 也能补上图标
+        repeat(3) { attempt ->
+            favicon = FaviconFetcher.load(appContext, domain)
+            awaitingDisk = false
+            if (favicon != null) return@LaunchedEffect
+            if (attempt < 2) delay(ICON_RETRY_DELAY_MS)
+        }
     }
 
     val initialText = remember(issuer, label) { initialOf(issuer, label) }

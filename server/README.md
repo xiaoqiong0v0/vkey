@@ -358,3 +358,23 @@ vkeyd 只监听 `127.0.0.1:3150`，TLS 由 nginx 终止（实测 nginx/1.18.0）
 - 无 APK/MSI 构建（Linux 的 `.tar.gz` 由 `linux/scripts/build-artifacts.sh` 产出）。
 - 冲突副本 `item_conflicts` 只落库，暂无查询 API（运维可直接查 sqlite）。
 - sqlite 单连接串行；详见 `ASYNC.md` 的边界说明。
+
+## Android 更新信息的惰性刷新
+
+服务端**不主动轮询** GitHub；只在客户端请求 `GET /api/v1/update/android` 且距上次检查超过 TTL 时，
+同步拉取一次 `https://github.com/<repo>/releases/latest/download/android.json`（5s 超时）。
+
+```bash
+# 默认开启，间隔 24 小时
+vkeyd policy set --db ./data/vkeyd.db --update-auto-check=true --update-check-interval=86400
+
+# 完全关闭（只用 CLI 静态写入的版本信息）
+vkeyd policy set --db ./data/vkeyd.db --update-auto-check=false
+
+# 查看当前状态（含 last_checked_at / last_check_error）
+vkeyd update show --db ./data/vkeyd.db
+```
+
+- 成功才覆盖缓存；失败保留旧值并记 `last_check_error`，接口仍返回 200/204
+- 同一时刻只允许一次拉取，并发请求用缓存返回
+- `android.json` 由 Release 工作流自动生成并上传（含 `version_code`/`sha256`/`size`）

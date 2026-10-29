@@ -24,13 +24,7 @@ const (
 
 // SetMeta 写入/覆盖一个 meta 键（供 CLI 配置用户模式与配额）。
 func (s *Store) SetMeta(ctx context.Context, key, value string) error {
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO meta(key, value) VALUES(?, ?)
-		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`, key, value)
-	if err != nil {
-		return fmt.Errorf("store: 写入 meta 失败: %w", err)
-	}
-	return nil
+	return metaSet(ctx, s.db, key, value)
 }
 
 // UserMode 返回配置的用户模式；未设置时为 policy.UserModeSingle。

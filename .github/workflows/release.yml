@@ -79,10 +79,34 @@ jobs:
           cp android/app/build/outputs/apk/release/app-release*.apk dist/vkey-android.apk
           cd dist && sha256sum vkey-android.apk > SHA256SUMS.apk
 
+      # 机器可读的更新元数据：服务端按 TTL 拉取本文件即可，无需 GitHub API（无速率限制）
+      - name: update metadata
+        run: |
+          META=$(find android/app/build/outputs/apk/release -name output-metadata.json | head -1)
+          VCODE=$(python3 -c "import json,sys;d=json.load(open('$META'));print(d['elements'][0]['versionCode'])")
+          VNAME=$(python3 -c "import json,sys;d=json.load(open('$META'));print(d['elements'][0]['versionName'])")
+          SIZE=$(stat -c%s dist/vkey-android.apk)
+          SHA=$(sha256sum dist/vkey-android.apk | cut -d' ' -f1)
+          python3 - "$VCODE" "$VNAME" "$SIZE" "$SHA" <<'PY' > dist/android.json
+          import json, sys, time
+          vcode, vname, size, sha = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]
+          json.dump({
+              "version_code": int(vcode),
+              "version_name": vname,
+              "sha256": sha,
+              "size": size,
+              "published_at": int(time.time()),
+          }, sys.stdout)
+          PY
+          echo "--- android.json ---"
+          cat dist/android.json
+
       - uses: actions/upload-artifact@v4
         with:
           name: android-apk
-          path: dist/vkey-android.apk
+          path: |
+            dist/vkey-android.apk
+            dist/android.json
 
   publish:
     name: publish release

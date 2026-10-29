@@ -64,6 +64,8 @@ func TestPolicySetUpdateFlags(t *testing.T) {
 			"--update-sha256=" + strings.ToUpper(testUpdateSHA256),
 			"--update-size=8388608",
 			"--update-notes=首个公开版本",
+			"--update-auto-check=false",
+			"--update-check-interval=3600",
 		})
 	})
 	if err != nil {
@@ -92,6 +94,12 @@ func TestPolicySetUpdateFlags(t *testing.T) {
 	}
 	if info.PublishedAt <= 0 {
 		t.Fatalf("写入 version_code/sha256 时应刷新发布时间，实际 %d", info.PublishedAt)
+	}
+	if info.AutoCheck {
+		t.Fatalf("auto_check 应为 false，实际 %+v", info)
+	}
+	if info.CheckInterval != 3600 {
+		t.Fatalf("check_interval = %d，期望 3600", info.CheckInterval)
 	}
 }
 
@@ -126,9 +134,23 @@ func TestUpdateShowOutput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("update show 失败: %v", err)
 	}
-	for _, want := range []string{"configured=true", "version_code=30101", "sha256=" + testUpdateSHA256} {
+	for _, want := range []string{
+		"configured=true", "version_code=30101", "sha256=" + testUpdateSHA256,
+		"auto_check=true", "check_interval=86400", "last_checked_at=0", "last_check_error=",
+	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("输出缺少 %q：\n%s", want, out)
 		}
+	}
+}
+
+// TestUpdateCheckIntervalRejectsNegative 验证负数间隔被 CLI 拒绝。
+func TestUpdateCheckIntervalRejectsNegative(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "update-negative.db")
+	_, _, err := runCapture(t, func() error {
+		return runPolicy([]string{"set", "--db", dbPath, "--update-check-interval=-1"})
+	})
+	if err == nil || !strings.Contains(err.Error(), "不小于 0") {
+		t.Fatalf("负数间隔应被拒绝，实际 err = %v", err)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -84,6 +85,11 @@ func newEnvOpts(t *testing.T, mutate func(*api.Options)) *env {
 		Domain:  "https://vkey.test",
 		Version: "test",
 		Logger:  log.New(io.Discard, "", 0),
+		// 缺省注入一个必然失败的 fetcher：既有用例不应访问真实网络；
+		// 需要断言拉取行为的用例自行覆盖 UpdateFetcher。
+		UpdateFetcher: func(context.Context, string) ([]byte, error) {
+			return nil, errors.New("测试未注入 UpdateFetcher")
+		},
 	}
 	if mutate != nil {
 		mutate(&opts)

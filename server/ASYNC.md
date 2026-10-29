@@ -62,3 +62,5 @@ vkeyd 是「单进程 + 单 sqlite 连接 + 同步处理函数」的模型：没
   超限时配对码不被消费）。
 - `internal/api/enroll_test.go`：enroll 契约（200/400/403/409/410/429）、token 语义、
   跨租户隔离（同名条目互不可见、跨账号吊销 404）、disable 全链路 401。
+
+| updateFetchMu | 单次更新拉取租约 | sync.Mutex.TryLock + 锁内二次判定 TTL | 锁内判定后写 meta，失败仍落 last_checked_at | internal/api/update.go refreshUpdateIfDue |

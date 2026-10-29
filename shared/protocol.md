@@ -576,9 +576,17 @@ Android 客户端启动时拉取，用来判断是否需要提示升级。响应
 | `github`（缺省） | `https://github.com/<repo>/releases/latest/download/<asset>`，`repo` 缺省 `xiaoqiong0v0/vkey`、`asset` 缺省 `vkey-android.apk` |
 | `local` | `<server_url>/dl/<asset>`，`server_url` 同 §4.13（`--domain` 优先，其次按请求推导）；`/dl/*` 的白名单仍由产物目录的 `SHA256SUMS` 决定 |
 
-- **不访问 GitHub API**：该端点只读本机 meta 表（键见 `server/internal/store/update.go`），
-  不发起任何出网请求，也不解压/校验 APK。GitHub Releases 未发布或资产名不符时 `url` 仍照常返回，
-  由客户端下载失败自行处理。
+**惰性刷新（`update.auto_check`，默认 `true`）**：服务端不主动轮询。仅在收到本端点请求、且距
+`update.last_checked_at` 已超过 `update.check_interval`（默认 86400 秒；`0` 表示每次请求都检查）时，
+**同步**拉取一次 `https://github.com/<repo>/releases/latest/download/android.json`（5s 超时）并更新缓存。
+
+- Release 工作流会把 `android.json`（`version_code` / `version_name` / `sha256` / `size` / `published_at`）作为资产上传
+- 拉取成功才覆盖缓存；失败保留旧值并记录 `update.last_check_error`，响应仍是 200/204（宁可给旧值也不报错）
+- 无论成功失败都刷新 `last_checked_at`，避免失败后每个请求都打网络
+- 同一时刻只允许一次拉取（进程内互斥 + 锁内二次判定 TTL），并发请求直接用缓存返回、不阻塞
+- 只允许 https 且域名白名单（`github.com`，重定向允许落到 `*.githubusercontent.com`），响应体上限 8 KiB
+- `update.auto_check=false` 时完全不拉取，只用 CLI 静态写入的配置
+- **不调用 GitHub API**（避免速率限制与鉴权），也不解压/校验 APK；下载失败由客户端处理
 - 响应头 `Cache-Control: public, max-age=300`（覆盖 `/api/*` 默认的 `no-store`），
   即配置改动后客户端最多 5 分钟后才看到。
 - 非 `GET` → `405 method_not_allowed`（`Allow: GET`）；限流 60 次/分钟/IP，超限 429 `rate_limited`。

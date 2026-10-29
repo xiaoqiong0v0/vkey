@@ -9,6 +9,7 @@
 //	                           [--update-source=github|local] [--update-repo=<owner/repo>] [--update-asset=<file>]
 //	                           [--update-version-code=<n>] [--update-version-name=<x.y.z>]
 //	                           [--update-sha256=<hex>] [--update-size=<n>] [--update-notes=<text>]
+//	                           [--update-auto-check=<bool>] [--update-check-interval=<seconds>]
 //	vkeyd update show --db <path>
 //	vkeyd user add <username> --db <path> [--ttl 30m] [--domain <域名>]
 //	vkeyd user list --db <path>
@@ -229,7 +230,7 @@ func runServe(args []string) error {
 // 至少给出一个策略开关；各项相互独立，未给出的保持不变。
 func runPolicy(args []string) error {
 	if len(args) == 0 || args[0] != "set" {
-		return errors.New("policy: 用法 `vkeyd policy set --db <path> [--require-master-pw=<bool>] [--user-mode=single|admin] [--max-items-per-user=<n>] [--max-bytes-per-user=<n>] [--max-devices-per-user=<n>] [--update-source=github|local] [--update-repo=<owner/repo>] [--update-asset=<file>] [--update-version-code=<n>] [--update-version-name=<x.y.z>] [--update-sha256=<hex>] [--update-size=<n>] [--update-notes=<text>]`")
+		return errors.New("policy: 用法 `vkeyd policy set --db <path> [--require-master-pw=<bool>] [--user-mode=single|admin] [--max-items-per-user=<n>] [--max-bytes-per-user=<n>] [--max-devices-per-user=<n>] [--update-source=github|local] [--update-repo=<owner/repo>] [--update-asset=<file>] [--update-version-code=<n>] [--update-version-name=<x.y.z>]         [--update-sha256=<hex>] [--update-size=<n>] [--update-notes=<text>] [--update-auto-check=<bool>] [--update-check-interval=<seconds>]`")
 	}
 	fs := flag.NewFlagSet("policy set", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -248,6 +249,8 @@ func runPolicy(args []string) error {
 	fs.StringVar(&upd.SHA256, "update-sha256", "", "APK 的 sha256（64 位 hex，可选）")
 	fs.StringVar(&upd.Size, "update-size", "", "APK 字节数（可选）")
 	fs.StringVar(&upd.Notes, "update-notes", "", "发布说明（可选）")
+	fs.StringVar(&upd.AutoCheck, "update-auto-check", "", "请求时惰性检查更新：true|false（可选）")
+	fs.StringVar(&upd.CheckInterval, "update-check-interval", "", "惰性检查间隔（秒，0 表示每次请求都检查，可选）")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -310,20 +313,23 @@ func runPolicy(args []string) error {
 
 // updateFlagValues 收集 `policy set` 的更新信息开关（空串表示未给出）。
 type updateFlagValues struct {
-	Source      string
-	Repo        string
-	Asset       string
-	VersionCode string
-	VersionName string
-	SHA256      string
-	Size        string
-	Notes       string
+	Source        string
+	Repo          string
+	Asset         string
+	VersionCode   string
+	VersionName   string
+	SHA256        string
+	Size          string
+	Notes         string
+	AutoCheck     string
+	CheckInterval string
 }
 
 // empty 判断所有更新信息开关都未给出。
 func (v updateFlagValues) empty() bool {
 	return v.Source == "" && v.Repo == "" && v.Asset == "" && v.VersionCode == "" &&
-		v.VersionName == "" && v.SHA256 == "" && v.Size == "" && v.Notes == ""
+		v.VersionName == "" && v.SHA256 == "" && v.Size == "" && v.Notes == "" &&
+		v.AutoCheck == "" && v.CheckInterval == ""
 }
 
 // applyUpdateFlags 校验并写入更新信息；写入 version_code 或 sha256 时刷新发布时间。
@@ -343,6 +349,8 @@ func applyUpdateFlags(ctx context.Context, st *store.Store, v updateFlagValues) 
 		{"--update-sha256", store.MetaKeyUpdateSHA256, v.SHA256},
 		{"--update-size", store.MetaKeyUpdateSize, v.Size},
 		{"--update-notes", store.MetaKeyUpdateNotes, v.Notes},
+		{"--update-auto-check", store.MetaKeyUpdateAutoCheck, v.AutoCheck},
+		{"--update-check-interval", store.MetaKeyUpdateCheckInterval, v.CheckInterval},
 	}
 	release := false
 	for _, it := range items {
@@ -380,10 +388,8 @@ func normalizeUpdateValue(key, value string) (string, error) {
 		}
 		return value, nil
 	case store.MetaKeyUpdateRepo:
-		parts := strings.Split(value, "/")
-		if len(parts) != 2 || parts[0] == "" || parts[1] == "" ||
-			strings.ContainsAny(value, " \t\r\n") {
-			return "", fmt.Errorf("必须是 owner/repo 形式，实际 %q", value)
+		if !store.ValidUpdateRepo(value) {
+			return "", fmt.Errorf("必须是 owner/repo 形式（字母数字与 . _ -），实际 %q", value)
 		}
 		return value, nil
 	case store.MetaKeyUpdateAsset:
@@ -398,10 +404,22 @@ func normalizeUpdateValue(key, value string) (string, error) {
 		}
 		return strconv.FormatInt(n, 10), nil
 	case store.MetaKeyUpdateSHA256:
-		if !isSHA256Hex(value) {
+		if !store.IsSHA256Hex(value) {
 			return "", fmt.Errorf("必须是 64 位十六进制，实际 %q", value)
 		}
 		return strings.ToLower(value), nil
+	case store.MetaKeyUpdateAutoCheck:
+		b, err := strconv.ParseBool(value)
+		if err != nil {
+			return "", fmt.Errorf("必须是 true 或 false，实际 %q", value)
+		}
+		return strconv.FormatBool(b), nil
+	case store.MetaKeyUpdateCheckInterval:
+		n, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || n < 0 {
+			return "", fmt.Errorf("必须是不小于 0 的整数（秒），实际 %q", value)
+		}
+		return strconv.FormatInt(n, 10), nil
 	default:
 		return value, nil
 	}
@@ -419,21 +437,6 @@ func validArtifactFileName(name string) bool {
 		switch {
 		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9',
 			c == '.', c == '_', c == '-':
-		default:
-			return false
-		}
-	}
-	return true
-}
-
-// isSHA256Hex 判断取值是否为 64 位十六进制（大小写均可）。
-func isSHA256Hex(s string) bool {
-	if len(s) != 64 {
-		return false
-	}
-	for _, c := range s {
-		switch {
-		case c >= '0' && c <= '9', c >= 'a' && c <= 'f', c >= 'A' && c <= 'F':
 		default:
 			return false
 		}
@@ -467,9 +470,10 @@ func runUpdate(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("source=%s\nrepo=%s\nasset=%s\nversion_code=%d\nversion_name=%s\nsha256=%s\nsize=%d\nnotes=%s\npublished_at=%d\nconfigured=%t\n",
+	fmt.Printf("source=%s\nrepo=%s\nasset=%s\nversion_code=%d\nversion_name=%s\nsha256=%s\nsize=%d\nnotes=%s\npublished_at=%d\nconfigured=%t\nauto_check=%t\ncheck_interval=%d\nlast_checked_at=%d\nlast_check_error=%s\n",
 		info.Source, info.Repo, info.Asset, info.VersionCode, info.VersionName,
-		info.SHA256, info.Size, info.Notes, info.PublishedAt, info.Configured)
+		info.SHA256, info.Size, info.Notes, info.PublishedAt, info.Configured,
+		info.AutoCheck, info.CheckInterval, info.LastCheckedAt, info.LastCheckError)
 	if !info.Configured {
 		fmt.Fprintln(os.Stderr, "vkeyd: 更新信息尚未配置完整（需要 version_code 与 sha256），GET /api/v1/update/android 返回 204")
 	}
@@ -663,6 +667,7 @@ func usage(w *os.File) {
                              [--update-source=github|local] [--update-repo=<owner/repo>] [--update-asset=<file>]
                              [--update-version-code=<n>] [--update-version-name=<x.y.z>]
                              [--update-sha256=<hex>] [--update-size=<n>] [--update-notes=<text>]
+                             [--update-auto-check=<bool>] [--update-check-interval=<seconds>]
   vkeyd update show --db <path>
    vkeyd user add <username> --db <path> [--ttl 30m] [--domain <域名>]
   vkeyd user list --db <path>
@@ -676,7 +681,9 @@ func usage(w *os.File) {
   serve  启动 HTTP 服务；TLS 由 nginx 终止
   policy 修改服务端策略（主密码、用户模式、每用户配额；-1 表示不限制）
          亦用于配置 Android 更新信息（--update-*，只写库、不访问网络）；
-         写入 --update-version-code 或 --update-sha256 时同时刷新发布时间
+         写入 --update-version-code 或 --update-sha256 时同时刷新发布时间；
+         --update-auto-check / --update-check-interval 控制服务端在请求到达时
+         按 TTL 拉取 Release 资产 android.json（缺省 true / 86400 秒）
   update 查看 Android 更新信息配置（show）：stdout 为 key=value 行，
          configured=false 时 GET /api/v1/update/android 返回 204
   user   多用户运维（仅 user_mode=admin 生效）：

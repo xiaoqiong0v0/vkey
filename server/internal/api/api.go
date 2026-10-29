@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"xiaoqiong0v0.cn/vkey/server/internal/crypto"
@@ -34,6 +35,8 @@ type Options struct {
 	Now func() time.Time
 	// Logger 是访问日志输出，nil 时使用 log.Default()。
 	Logger *log.Logger
+	// UpdateFetcher 是更新元数据的网络访问注入点，nil 时使用内置 HTTPS fetcher。
+	UpdateFetcher UpdateFetcher
 }
 
 // Server 是 API 服务实例。
@@ -43,6 +46,11 @@ type Server struct {
 	rl     *rateLimiter
 	mux    http.Handler
 	logger *log.Logger
+
+	// updateFetch 是拉取 android.json 的实现（测试注入）。
+	updateFetch UpdateFetcher
+	// updateFetchMu 保证同一时刻只有一个请求在拉取元数据（TryLock，其它请求不阻塞）。
+	updateFetchMu sync.Mutex
 }
 
 // New 构造 API 服务并完成路由注册。
@@ -62,7 +70,10 @@ func New(st *store.Store, opts Options) *Server {
 	if opts.Logger == nil {
 		opts.Logger = log.Default()
 	}
-	s := &Server{store: st, opts: opts, rl: newRateLimiter(), logger: opts.Logger}
+	if opts.UpdateFetcher == nil {
+		opts.UpdateFetcher = httpUpdateFetcher
+	}
+	s := &Server{store: st, opts: opts, rl: newRateLimiter(), logger: opts.Logger, updateFetch: opts.UpdateFetcher}
 	s.mux = s.withCommon(s.routes())
 	return s
 }

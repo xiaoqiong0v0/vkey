@@ -26,7 +26,10 @@ const tombstonePredicate = `deleted_at IS NOT NULL AND deleted_at != 0`
 var ErrPurgeGuard = fmt.Errorf("store: 物理删除断言失败：非墓碑条目受影响，已回滚")
 
 // PurgeTarget 是一条待物理删除的墓碑条目摘要（不含密文）。
+//
+// 复合主键 (user_id, id) 后 id 仅在账号内唯一，摘要必须带上 UserID 才能定位行。
 type PurgeTarget struct {
+	UserID    string
 	ID        string
 	Kind      string
 	RPID      string
@@ -34,13 +37,19 @@ type PurgeTarget struct {
 	Version   int64
 }
 
-// PurgePending 列出待物理删除的墓碑条目，按 id 升序。
+// PurgeRef 定位一个 items 行（与 PurgeTarget 的主键部分对应）。
+type PurgeRef struct {
+	UserID string
+	ID     string
+}
+
+// PurgePending 列出待物理删除的墓碑条目，按 (user_id, id) 升序。
 //
 // 只读操作，供 `vkeyd purge` 的 dry-run 使用；不会修改数据库。
 func (s *Store) PurgePending(ctx context.Context) ([]PurgeTarget, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, kind, rp_id, deleted_at, version FROM items
-		 WHERE `+tombstonePredicate+` ORDER BY id ASC`)
+		`SELECT user_id, id, kind, rp_id, deleted_at, version FROM items
+		 WHERE `+tombstonePredicate+` ORDER BY user_id ASC, id ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("store: 查询待删除墓碑失败: %w", err)
 	}
@@ -49,7 +58,7 @@ func (s *Store) PurgePending(ctx context.Context) ([]PurgeTarget, error) {
 	out := make([]PurgeTarget, 0, 16)
 	for rows.Next() {
 		var t PurgeTarget
-		if err := rows.Scan(&t.ID, &t.Kind, &t.RPID, &t.DeletedAt, &t.Version); err != nil {
+		if err := rows.Scan(&t.UserID, &t.ID, &t.Kind, &t.RPID, &t.DeletedAt, &t.Version); err != nil {
 			return nil, fmt.Errorf("store: 解析待删除墓碑失败: %w", err)
 		}
 		out = append(out, t)
@@ -87,24 +96,28 @@ func (s *Store) Purge(ctx context.Context) (int64, error) {
 	})
 }
 
-// PurgeIDs 在单个事务内物理删除指定 id 的墓碑条目（交互式勾选后使用）。
+// PurgeIDs 在单个事务内物理删除指定 (user_id, id) 的墓碑条目（交互式勾选后使用）。
 //
-// 参数：ids 为待删除条目的 id（通常来自 PurgePending）；重复 id 会被去重。
+// 参数：ids 为待删除条目的主键对（通常来自 PurgePending）；重复项会被去重。
+// 复合主键 (user_id, id) 后 id 仅在账号内唯一，谓词必须成对匹配，
+// 只按 id 匹配会误删其他账号的同名条目。
 // 返回：实际删除的条数（ids 为空时为 0）。
-// 防御断言与 Purge 一致，且额外要求「实际影响行数 == 去重后的 id 数」——
-// 若某个 id 在删除时已不是墓碑（状态被并发改动），事务回滚并返回 ErrPurgeGuard。
-func (s *Store) PurgeIDs(ctx context.Context, ids []string) (int64, error) {
-	uniq := dedupeIDs(ids)
+// 防御断言与 Purge 一致，且额外要求「实际影响行数 == 去重后的主键对数」——
+// 若某个主键对在删除时已不是墓碑（状态被并发改动），事务回滚并返回 ErrPurgeGuard。
+func (s *Store) PurgeIDs(ctx context.Context, ids []PurgeRef) (int64, error) {
+	uniq := dedupeRefs(ids)
 	if len(uniq) == 0 {
 		return 0, nil
 	}
 	return s.purgeInTx(ctx, func(ctx context.Context, tx *sql.Tx) (int64, int64, error) {
-		args := make([]any, len(uniq))
-		for i, id := range uniq {
-			args[i] = id
+		args := make([]any, 0, len(uniq)*2)
+		pairs := make([]string, 0, len(uniq))
+		for _, r := range uniq {
+			pairs = append(pairs, `(user_id = ? AND id = ?)`)
+			args = append(args, r.UserID, r.ID)
 		}
-		sqlText := `DELETE FROM items WHERE id IN (` +
-			strings.TrimSuffix(strings.Repeat("?,", len(uniq)), ",") + `) AND ` + tombstonePredicate
+		sqlText := `DELETE FROM items WHERE (` +
+			strings.Join(pairs, " OR ") + `) AND ` + tombstonePredicate
 		res, err := tx.ExecContext(ctx, sqlText, args...)
 		if err != nil {
 			return 0, 0, fmt.Errorf("store: 物理删除墓碑失败: %w", err)
@@ -164,19 +177,21 @@ func (s *Store) purgeInTx(ctx context.Context, exec purgeExec) (int64, error) {
 	return affected, nil
 }
 
-// dedupeIDs 按首次出现顺序去重，并丢弃空字符串。
-func dedupeIDs(ids []string) []string {
-	seen := make(map[string]struct{}, len(ids))
-	out := make([]string, 0, len(ids))
-	for _, id := range ids {
-		if id == "" {
+// dedupeRefs 按首次出现顺序去重主键对，并丢弃 id 为空的项。
+func dedupeRefs(refs []PurgeRef) []PurgeRef {
+	type key struct{ user, id string }
+	seen := make(map[key]struct{}, len(refs))
+	out := make([]PurgeRef, 0, len(refs))
+	for _, r := range refs {
+		if r.ID == "" {
 			continue
 		}
-		if _, ok := seen[id]; ok {
+		k := key{r.UserID, r.ID}
+		if _, ok := seen[k]; ok {
 			continue
 		}
-		seen[id] = struct{}{}
-		out = append(out, id)
+		seen[k] = struct{}{}
+		out = append(out, r)
 	}
 	return out
 }

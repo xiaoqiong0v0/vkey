@@ -33,6 +33,10 @@ func (s *Store) CreatePair(ctx context.Context, p Pair) error {
 // 并发契约：整个消费过程在同一事务内完成，且用 used_at IS NULL 作为条件更新，
 // 保证同一配对码只可能被成功领取一次（见 ASYNC.md）。
 func (s *Store) ClaimPair(ctx context.Context, codeHash []byte, name, platform string, pubkey, tokenHash []byte, now int64) (*PairClaim, error) {
+	q, err := s.Quotas(ctx)
+	if err != nil {
+		return nil, err
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("store: 开启事务失败: %w", err)
@@ -45,14 +49,15 @@ func (s *Store) ClaimPair(ctx context.Context, codeHash []byte, name, platform s
 		blob       []byte
 		pwSalt     []byte
 		wrappedKey []byte
+		disabledAt sql.NullInt64
 		expiresAt  int64
 		usedAt     sql.NullInt64
 	)
 	err = tx.QueryRowContext(ctx,
-		`SELECT p.code_id, p.user_id, p.blob, p.pw_salt, u.wrapped_key, p.expires_at, p.used_at
+		`SELECT p.code_id, p.user_id, p.blob, p.pw_salt, u.wrapped_key, u.disabled_at, p.expires_at, p.used_at
 		 FROM pairs p JOIN users u ON u.id = p.user_id
 		 WHERE p.code_hash = ?`, codeHash).
-		Scan(&codeID, &userID, &blob, &pwSalt, &wrappedKey, &expiresAt, &usedAt)
+		Scan(&codeID, &userID, &blob, &pwSalt, &wrappedKey, &disabledAt, &expiresAt, &usedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -64,6 +69,15 @@ func (s *Store) ClaimPair(ctx context.Context, codeHash []byte, name, platform s
 	}
 	if expiresAt <= now {
 		return nil, ErrPairExpired
+	}
+	// 账号已停用：不允许再领取配对码新增设备（错误不区分原因细节）。
+	if disabledAt.Int64 != 0 {
+		return nil, ErrUserDisabled
+	}
+
+	// 配对领取总是新建设备行，先占配额。
+	if err := checkDeviceSlot(ctx, tx, userID, q); err != nil {
+		return nil, err
 	}
 
 	deviceID, err := newID()
@@ -77,7 +91,7 @@ func (s *Store) ClaimPair(ctx context.Context, codeHash []byte, name, platform s
 		return nil, fmt.Errorf("store: 创建配对设备失败: %w", err)
 	}
 	res, err := tx.ExecContext(ctx,
-		`UPDATE pairs SET used_at = ? WHERE code_id = ? AND used_at IS NULL`, now, codeID)
+		`UPDATE pairs SET used_at = ? WHERE user_id = ? AND code_id = ? AND used_at IS NULL`, now, userID, codeID)
 	if err != nil {
 		return nil, fmt.Errorf("store: 标记配对码已用失败: %w", err)
 	}

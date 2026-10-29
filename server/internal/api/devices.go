@@ -91,6 +91,9 @@ func (s *Server) handleDeviceRegister(w http.ResponseWriter, r *http.Request, de
 	}
 	deviceID, err := s.store.CreateDevice(r.Context(), dev.UserID, req.Name, req.Platform, pubkey, nil, s.nowUnix())
 	if err != nil {
+		if writeQuotaErr(w, err) {
+			return
+		}
 		s.logErr("注册设备失败", err)
 		writeErr(w, http.StatusInternalServerError, "internal", "服务端内部错误")
 		return

@@ -83,6 +83,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/policy", s.handlePolicy)
 	mux.HandleFunc("GET /api/v1/health", s.handleHealth)
 	mux.HandleFunc("POST /api/v1/auth/token", s.withRateLimit("auth", s.handleAuthToken))
+	mux.HandleFunc("POST /api/v1/auth/enroll", s.withRateLimit("enroll", s.handleEnroll))
 	mux.HandleFunc("POST /api/v1/auth/password", s.withAuth(s.handleSetPassword))
 	mux.HandleFunc("DELETE /api/v1/auth/password", s.withAuth(s.handleDeletePassword))
 	mux.HandleFunc("POST /api/v1/items", s.withAuth(s.handlePostItems))
@@ -96,6 +97,7 @@ func (s *Server) routes() http.Handler {
 	// 同一路径的其它方法统一返回 JSON 错误，避免 ServeMux 的纯文本 405。
 	for _, p := range []string{
 		"/api/v1/policy", "/api/v1/health", "/api/v1/auth/token",
+		"/api/v1/auth/enroll",
 		"/api/v1/auth/password",
 		"/api/v1/items", "/api/v1/devices", "/api/v1/devices/register", "/api/v1/devices/revoke",
 		"/api/v1/pair/new", "/api/v1/pair/claim",
@@ -334,6 +336,19 @@ func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) (*store.De
 		return nil, http.StatusInternalServerError, "internal", "服务端内部错误"
 	}
 
+	// 账号被管理员停用（disable）后，该账号全部设备立即 401；数据保留。
+	u, err := s.store.UserByID(r.Context(), dev.UserID)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil, http.StatusUnauthorized, "invalid_token", "token 无效或设备已吊销"
+	}
+	if err != nil {
+		s.logger.Printf("auth/user 查询失败: %v", err)
+		return nil, http.StatusInternalServerError, "internal", "服务端内部错误"
+	}
+	if u.DisabledAt != 0 {
+		return nil, http.StatusUnauthorized, "user_disabled", "账号已被停用"
+	}
+
 	body, err := readBody(w, r)
 	if err != nil {
 		if errors.Is(err, errBodyTooLarge) {
@@ -355,7 +370,7 @@ func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) (*store.De
 	}
 
 	r.Body = io.NopCloser(bytes.NewReader(body))
-	if err := s.store.TouchDevice(r.Context(), dev.ID, s.nowUnix()); err != nil {
+	if err := s.store.TouchDevice(r.Context(), dev.UserID, dev.ID, s.nowUnix()); err != nil {
 		s.logger.Printf("更新设备活跃时间失败: %v", err)
 	}
 	return dev, 0, "", ""
@@ -421,4 +436,21 @@ func b64Ptr(b []byte) *string {
 	}
 	s := crypto.B64(b)
 	return &s
+}
+
+// writeQuotaErr 把配额类存储错误映射为统一的 409 JSON 响应。
+//
+// 返回：true 表示已写出响应（调用方应直接 return）；false 表示 err 不是配额错误。
+func writeQuotaErr(w http.ResponseWriter, err error) bool {
+	switch {
+	case errors.Is(err, store.ErrQuotaItems):
+		writeErr(w, http.StatusConflict, "quota_items", "超出每用户条目数配额")
+	case errors.Is(err, store.ErrQuotaBytes):
+		writeErr(w, http.StatusConflict, "quota_bytes", "超出每用户密文字节配额")
+	case errors.Is(err, store.ErrQuotaDevices):
+		writeErr(w, http.StatusConflict, "quota_devices", "超出每用户设备数配额")
+	default:
+		return false
+	}
+	return true
 }

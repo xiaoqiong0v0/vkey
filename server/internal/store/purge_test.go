@@ -140,17 +140,21 @@ func TestPurgeSQLGuardsTombstone(t *testing.T) {
 	}
 }
 
-// TestPurgeIDsDeletesOnlySelected 验证按 id 删除只影响勾选的墓碑。
+// TestPurgeIDsDeletesOnlySelected 验证按 (user_id, id) 删除只影响勾选的墓碑。
 func TestPurgeIDsDeletesOnlySelected(t *testing.T) {
 	st := newPurgeTestStore(t, testItems())
 	ctx := context.Background()
+	u, err := st.FirstUser(ctx)
+	if err != nil {
+		t.Fatalf("FirstUser: %v", err)
+	}
 
-	n, err := st.PurgeIDs(ctx, []string{"item-tomb-a", "item-tomb-a"})
+	n, err := st.PurgeIDs(ctx, []PurgeRef{{UserID: u.ID, ID: "item-tomb-a"}, {UserID: u.ID, ID: "item-tomb-a"}})
 	if err != nil {
 		t.Fatalf("PurgeIDs: %v", err)
 	}
 	if n != 1 {
-		t.Fatalf("删除条数 = %d，期望 1（重复 id 已去重）", n)
+		t.Fatalf("删除条数 = %d，期望 1（重复主键对已去重）", n)
 	}
 	if got := countAll(t, st); got != 2 {
 		t.Fatalf("删除后条目数 = %d，期望 2", got)
@@ -180,15 +184,64 @@ func TestPurgeIDsDeletesOnlySelected(t *testing.T) {
 	}
 }
 
-// TestPurgeIDsGuardsNonTombstone 验证勾选了非墓碑 id 时回滚并返回 ErrPurgeGuard。
+// TestPurgeIDsGuardsNonTombstone 验证勾选了非墓碑主键对时回滚并返回 ErrPurgeGuard。
 func TestPurgeIDsGuardsNonTombstone(t *testing.T) {
 	st := newPurgeTestStore(t, testItems())
 	ctx := context.Background()
+	u, err := st.FirstUser(ctx)
+	if err != nil {
+		t.Fatalf("FirstUser: %v", err)
+	}
 
-	if _, err := st.PurgeIDs(ctx, []string{"item-tomb-a", "item-alive"}); !errors.Is(err, ErrPurgeGuard) {
+	refs := []PurgeRef{{UserID: u.ID, ID: "item-tomb-a"}, {UserID: u.ID, ID: "item-alive"}}
+	if _, err := st.PurgeIDs(ctx, refs); !errors.Is(err, ErrPurgeGuard) {
 		t.Fatalf("PurgeIDs 错误 = %v，期望 ErrPurgeGuard", err)
 	}
 	if got := countAll(t, st); got != 3 {
 		t.Fatalf("回滚后条目数 = %d，期望 3", got)
+	}
+}
+
+// TestPurgeIDsRespectsUserScope 验证复合主键后跨用户同名 id 的墓碑互不影响：
+// 删除 bob 的同名墓碑不得波及 alice。
+func TestPurgeIDsRespectsUserScope(t *testing.T) {
+	st := newPurgeTestStore(t, testItems())
+	ctx := context.Background()
+	alice, err := st.FirstUser(ctx)
+	if err != nil {
+		t.Fatalf("FirstUser: %v", err)
+	}
+	if err := st.CreateUser(ctx, User{Username: "bob", Verifier: []byte{2}}); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	bob, err := st.UserByUsername(ctx, "bob")
+	if err != nil {
+		t.Fatalf("UserByUsername: %v", err)
+	}
+	// bob 写一条与 alice 同名（item-tomb-a）的墓碑。
+	if _, err := st.ApplyItems(ctx, bob.ID, []ItemInput{
+		{ID: "item-tomb-a", Kind: "totp", RPID: "z.example", UpdatedAt: 100, DeletedAt: 400},
+	}); err != nil {
+		t.Fatalf("ApplyItems(bob): %v", err)
+	}
+
+	// 只删 bob 的主键对。
+	n, err := st.PurgeIDs(ctx, []PurgeRef{{UserID: bob.ID, ID: "item-tomb-a"}})
+	if err != nil || n != 1 {
+		t.Fatalf("PurgeIDs = (%d, %v)，期望 (1, nil)", n, err)
+	}
+	// alice 的同名墓碑仍在。
+	targets, err := st.PurgePending(ctx)
+	if err != nil {
+		t.Fatalf("PurgePending: %v", err)
+	}
+	var aliceTomb int
+	for _, tg := range targets {
+		if tg.ID == "item-tomb-a" && tg.UserID == alice.ID {
+			aliceTomb++
+		}
+	}
+	if aliceTomb != 1 {
+		t.Fatalf("alice 的同名墓碑应保留，实际 %d 条（共 %d 条待删）", aliceTomb, len(targets))
 	}
 }

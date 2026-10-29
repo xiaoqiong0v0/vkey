@@ -8,12 +8,12 @@ import (
 	"xiaoqiong0v0.cn/vkey/server/internal/store"
 )
 
-// testPurgeTargets 造 3 条墓碑摘要。
+// testPurgeTargets 造 3 条墓碑摘要（分属两个用户，含跨用户同名 id）。
 func testPurgeTargets() []store.PurgeTarget {
 	return []store.PurgeTarget{
-		{ID: "aaaaaaaa-1", Kind: "totp", RPID: "a.example", DeletedAt: 200, Version: 3},
-		{ID: "bbbbbbbb-2", Kind: "totp", RPID: "b.example", DeletedAt: 300, Version: 4},
-		{ID: "cccccccc-3", Kind: "totp", RPID: "c.example", DeletedAt: 400, Version: 5},
+		{UserID: "user-alice", ID: "aaaaaaaa-1", Kind: "totp", RPID: "a.example", DeletedAt: 200, Version: 3},
+		{UserID: "user-bob", ID: "bbbbbbbb-2", Kind: "totp", RPID: "b.example", DeletedAt: 300, Version: 4},
+		{UserID: "user-alice", ID: "cccccccc-3", Kind: "totp", RPID: "c.example", DeletedAt: 400, Version: 5},
 	}
 }
 
@@ -26,8 +26,8 @@ func TestPurgeSelectionInitial(t *testing.T) {
 	if got := sel.count(); got != 0 {
 		t.Fatalf("已选 = %d，期望 0", got)
 	}
-	if got := len(sel.ids()); got != 0 {
-		t.Fatalf("ids 长度 = %d，期望 0", got)
+	if got := len(sel.refs()); got != 0 {
+		t.Fatalf("refs 长度 = %d，期望 0", got)
 	}
 }
 
@@ -71,13 +71,16 @@ func TestPurgeSelectionToggle(t *testing.T) {
 	if got := sel.count(); got != 2 {
 		t.Fatalf("已选 = %d，期望 2", got)
 	}
-	if ids := sel.ids(); len(ids) != 2 || ids[0] != "aaaaaaaa-1" || ids[1] != "cccccccc-3" {
-		t.Fatalf("ids = %v，期望按原始顺序 [aaaaaaaa-1 cccccccc-3]", ids)
+	if refs := sel.refs(); len(refs) != 2 || refs[0].ID != "aaaaaaaa-1" || refs[1].ID != "cccccccc-3" {
+		t.Fatalf("refs = %v，期望按原始顺序 [aaaaaaaa-1 cccccccc-3]", refs)
+	}
+	if refs := sel.refs(); len(refs) != 2 || refs[0].UserID != "user-alice" {
+		t.Fatalf("refs 缺少 user 归属: %v", refs)
 	}
 	// 再次切换第 3 行 → 取消勾选。
 	sel.toggle()
-	if ids := sel.ids(); len(ids) != 1 || ids[0] != "aaaaaaaa-1" {
-		t.Fatalf("取消勾选后 ids = %v", ids)
+	if refs := sel.refs(); len(refs) != 1 || refs[0].ID != "aaaaaaaa-1" {
+		t.Fatalf("取消勾选后 refs = %v", refs)
 	}
 	if got := len(sel.selected()); got != 1 || sel.selected()[0].ID != "aaaaaaaa-1" {
 		t.Fatalf("selected = %+v", sel.selected())
@@ -121,10 +124,10 @@ func TestRenderPurgeSelect(t *testing.T) {
 	if !strings.Contains(out, "共 3 条，已选 1 条") {
 		t.Fatalf("缺少计数行：\n%q", out)
 	}
-	if !strings.Contains(out, "> [x] aaaaaaaa… totp a.example 200 3") {
+	if !strings.Contains(out, "> [x] user-ali…/aaaaaaaa… totp a.example 200 3") {
 		t.Fatalf("缺少光标+勾选行：\n%q", out)
 	}
-	if !strings.Contains(out, "  [ ] bbbbbbbb… totp b.example 300 4") {
+	if !strings.Contains(out, "  [ ] user-bob/bbbbbbbb… totp b.example 300 4") {
 		t.Fatalf("缺少未勾选行：\n%q", out)
 	}
 }

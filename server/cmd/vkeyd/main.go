@@ -4,7 +4,13 @@
 //
 //	vkeyd init   --db <path> [--username default] [--master-key <base32>]
 //	vkeyd serve  --db <path> --listen :8080 [--domain <域名>] [--artifacts-dir <dir>] [--set-require-master-pw=true|false]
-//	vkeyd policy set --db <path> --require-master-pw=<bool>
+//	vkeyd policy set --db <path> [--require-master-pw=<bool>] [--user-mode=single|admin]
+//	                           [--max-items-per-user=<n>] [--max-bytes-per-user=<n|20MiB>] [--max-devices-per-user=<n>]
+//	vkeyd user add <username> --db <path> [--ttl 30m]
+//	vkeyd user list --db <path>
+//	vkeyd user disable|enable <username>|--id <id> --db <path>
+//	vkeyd user delete <username>|--id <id> --db <path> [--yes]
+//	vkeyd user revoke <code_id> --db <path>
 //	vkeyd purge  --db <path> [--dry-run | --yes]
 //
 // purge 无开关且在终端里执行时进入交互式勾选，选择要物理删除的墓碑。
@@ -21,11 +27,13 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
 	"xiaoqiong0v0.cn/vkey/server/internal/api"
 	"xiaoqiong0v0.cn/vkey/server/internal/crypto"
+	"xiaoqiong0v0.cn/vkey/server/internal/policy"
 	"xiaoqiong0v0.cn/vkey/server/internal/store"
 	"xiaoqiong0v0.cn/vkey/server/internal/version"
 )
@@ -54,6 +62,8 @@ func run(args []string) error {
 		return runServe(args[1:])
 	case "policy":
 		return runPolicy(args[1:])
+	case "user":
+		return runUser(args[1:])
 	case "purge":
 		return runPurge(args[1:])
 	case "help", "-h", "--help":
@@ -208,38 +218,114 @@ func runServe(args []string) error {
 	}
 }
 
-// runPolicy 处理 `policy set` 子命令。
+// runPolicy 处理 `policy set` 子命令：可修改主密码策略、用户模式与每用户配额。
+//
+// 至少给出一个策略开关；各项相互独立，未给出的保持不变。
 func runPolicy(args []string) error {
 	if len(args) == 0 || args[0] != "set" {
-		return errors.New("policy: 用法 `vkeyd policy set --db <path> --require-master-pw=<bool>`")
+		return errors.New("policy: 用法 `vkeyd policy set --db <path> [--require-master-pw=<bool>] [--user-mode=single|admin] [--max-items-per-user=<n>] [--max-bytes-per-user=<n>] [--max-devices-per-user=<n>]`")
 	}
 	fs := flag.NewFlagSet("policy set", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	dbPath := fs.String("db", "", "sqlite 数据库路径（必填）")
-	require := fs.String("require-master-pw", "", "是否强制主密码：true|false（必填）")
+	require := fs.String("require-master-pw", "", "是否强制主密码：true|false（可选）")
+	userMode := fs.String("user-mode", "", "用户模式：single|admin（可选）")
+	maxItems := fs.String("max-items-per-user", "", "每用户条目数配额；-1 表示不限制（可选）")
+	maxBytes := fs.String("max-bytes-per-user", "", "每用户密文字节配额；支持 20MiB/K/M/G 后缀，-1 不限制（可选）")
+	maxDevices := fs.String("max-devices-per-user", "", "每用户设备数配额；-1 表示不限制（可选）")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
 	if *dbPath == "" {
 		return errors.New("policy set: 缺少 --db")
 	}
-	if *require == "" {
-		return errors.New("policy set: 缺少 --require-master-pw")
+	if *require == "" && *userMode == "" && *maxItems == "" && *maxBytes == "" && *maxDevices == "" {
+		return errors.New("policy set: 至少给出一个策略开关")
 	}
-	v, err := strconv.ParseBool(*require)
-	if err != nil {
-		return errors.New("policy set: --require-master-pw 必须是 true 或 false")
-	}
+
 	st, err := store.Open(*dbPath)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = st.Close() }()
-	if err := setPolicy(context.Background(), st, v); err != nil {
-		return err
+	ctx := context.Background()
+
+	if *require != "" {
+		v, err := strconv.ParseBool(*require)
+		if err != nil {
+			return errors.New("policy set: --require-master-pw 必须是 true 或 false")
+		}
+		if err := setPolicy(ctx, st, v); err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "vkeyd: require_master_pw 已设置为 %v\n", v)
 	}
-	fmt.Fprintf(os.Stderr, "vkeyd: require_master_pw 已设置为 %v\n", v)
+	if *userMode != "" {
+		if *userMode != policy.UserModeSingle && *userMode != policy.UserModeAdmin {
+			return fmt.Errorf("policy set: --user-mode 必须是 %s 或 %s", policy.UserModeSingle, policy.UserModeAdmin)
+		}
+		if err := st.SetUserMode(ctx, *userMode); err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "vkeyd: user_mode 已设置为 %s\n", *userMode)
+	}
+	quotas := []struct {
+		name, value string
+		key         string
+	}{
+		{"--max-items-per-user", *maxItems, store.MetaKeyMaxItemsPerUser},
+		{"--max-bytes-per-user", *maxBytes, store.MetaKeyMaxBytesPerUser},
+		{"--max-devices-per-user", *maxDevices, store.MetaKeyMaxDevicesPerUser},
+	}
+	for _, q := range quotas {
+		if q.value == "" {
+			continue
+		}
+		v, err := parseQuotaValue(q.value)
+		if err != nil {
+			return fmt.Errorf("policy set: %s %w", q.name, err)
+		}
+		if err := st.SetQuota(ctx, q.key, v); err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "vkeyd: %s 已设置为 %d\n", q.name, v)
+	}
 	return nil
+}
+
+// parseQuotaValue 解析配额取值：整数（含 -1=不限制），
+// 或带 K/M/G/KiB/MiB/GiB/B 后缀的字节数（后缀按 1024 进制，20MiB 与 20M 等价）。
+func parseQuotaValue(s string) (int64, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, errors.New("不能为空")
+	}
+	if i, err := strconv.ParseInt(s, 10, 64); err == nil {
+		return i, nil
+	}
+	upper := strings.ToUpper(s)
+	mult := int64(1)
+	switch {
+	case strings.HasSuffix(upper, "KIB"):
+		mult, upper = 1<<10, strings.TrimSuffix(upper, "KIB")
+	case strings.HasSuffix(upper, "MIB"):
+		mult, upper = 1<<20, strings.TrimSuffix(upper, "MIB")
+	case strings.HasSuffix(upper, "GIB"):
+		mult, upper = 1<<30, strings.TrimSuffix(upper, "GIB")
+	case strings.HasSuffix(upper, "K"):
+		mult, upper = 1<<10, strings.TrimSuffix(upper, "K")
+	case strings.HasSuffix(upper, "M"):
+		mult, upper = 1<<20, strings.TrimSuffix(upper, "M")
+	case strings.HasSuffix(upper, "G"):
+		mult, upper = 1<<30, strings.TrimSuffix(upper, "G")
+	case strings.HasSuffix(upper, "B"):
+		upper = strings.TrimSuffix(upper, "B")
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(upper), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("非法取值 %q（需为整数或如 20MiB 的字节数）", s)
+	}
+	return n * mult, nil
 }
 
 // setPolicy 把策略写入唯一账号。
@@ -340,8 +426,8 @@ func purgeDryRun(ctx context.Context, st *store.Store, w io.Writer, hintNoTTY bo
 	}
 	fmt.Fprintf(w, "以下 %d 条墓碑将被物理删除（未写库）\n", len(targets))
 	for _, t := range targets {
-		fmt.Fprintf(w, "  id=%s kind=%s rp_id=%s deleted_at=%d version=%d\n",
-			shortID(t.ID), t.Kind, t.RPID, t.DeletedAt, t.Version)
+		fmt.Fprintf(w, "  user=%s id=%s kind=%s rp_id=%s deleted_at=%d version=%d\n",
+			shortID(t.UserID), shortID(t.ID), t.Kind, t.RPID, t.DeletedAt, t.Version)
 	}
 	if hintNoTTY {
 		fmt.Fprintf(w, "合计：%d 条\n", len(targets))
@@ -389,13 +475,27 @@ func usage(w *os.File) {
 用法：
   vkeyd init   --db <path> [--username default] [--master-key <base32>]
   vkeyd serve  --db <path> --listen :8080 [--domain <域名>] [--artifacts-dir <dir>] [--set-require-master-pw=true|false]
-  vkeyd policy set --db <path> --require-master-pw=<bool>
+  vkeyd policy set --db <path> [--require-master-pw=<bool>] [--user-mode=single|admin]
+                             [--max-items-per-user=<n>] [--max-bytes-per-user=<n|20MiB>] [--max-devices-per-user=<n>]
+  vkeyd user add <username> --db <path> [--ttl 30m]
+  vkeyd user list --db <path>
+  vkeyd user disable|enable <username>|--id <id> --db <path>
+  vkeyd user delete <username>|--id <id> --db <path> [--yes]
+  vkeyd user revoke <code_id> --db <path>
   vkeyd purge  --db <path> [--dry-run | --yes]
 
 说明：
   init   建库并创建账号，stdout 只打印一次 master_key（base32 无填充）
   serve  启动 HTTP 服务；TLS 由 nginx 终止
-  policy 修改服务端策略（是否强制主密码）
+  policy 修改服务端策略（主密码、用户模式、每用户配额；-1 表示不限制）
+  user   多用户运维（仅 user_mode=admin 生效）：
+         add     签发一次性开户码（默认 30 分钟、单次使用），stdout 为
+                 username=/code=/code_id=/expires_at= 四行，便于脚本解析；
+                 single 模式下直接拒绝
+         list    列出账号（含设备/条目计数）与待用开户码
+         disable 停用账号：其全部设备立即 401，数据保留；enable 恢复
+         delete  级联删除 items/devices/pairs 等；不带 --yes 只打印将删除的行数
+         revoke  撤销一条未使用的开户码
   purge  物理删除已逻辑删除的条目（墓碑）；仅控制台执行，无 HTTP 接口
          无开关且在终端里 → 交互勾选（空格选择、回车确认、y 删除）
          无开关且没有终端 → 只列清单，提示加 --yes

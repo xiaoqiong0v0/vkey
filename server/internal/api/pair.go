@@ -153,6 +153,11 @@ func (s *Server) handlePairClaim(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, store.ErrPairExpired):
 		writeErr(w, http.StatusGone, "code_expired", "配对码已过期")
 		return
+	case errors.Is(err, store.ErrUserDisabled):
+		writeErr(w, http.StatusUnauthorized, "user_disabled", "账号已被停用")
+		return
+	case writeQuotaErr(w, err):
+		return
 	case err != nil:
 		s.logErr("领取配对码失败", err)
 		writeErr(w, http.StatusInternalServerError, "internal", "服务端内部错误")

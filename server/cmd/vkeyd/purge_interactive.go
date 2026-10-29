@@ -110,12 +110,12 @@ func (s *purgeSelection) selected() []store.PurgeTarget {
 	return out
 }
 
-// ids 返回已勾选条目的 id（保持原始顺序）。
-func (s *purgeSelection) ids() []string {
-	out := make([]string, 0, s.count())
+// refs 返回已勾选条目的主键对 (user_id, id)（保持原始顺序）。
+func (s *purgeSelection) refs() []store.PurgeRef {
+	out := make([]store.PurgeRef, 0, s.count())
 	for i, ok := range s.picked {
 		if ok {
-			out = append(out, s.targets[i].ID)
+			out = append(out, store.PurgeRef{UserID: s.targets[i].UserID, ID: s.targets[i].ID})
 		}
 	}
 	return out
@@ -152,8 +152,8 @@ func renderPurgeSelect(sel *purgeSelection, rows int) string {
 		if sel.picked[i] {
 			box = "[x]"
 		}
-		fmt.Fprintf(&b, "%s%s %s %s %s %d %d%s",
-			cursor, box, shortID(t.ID), t.Kind, t.RPID, t.DeletedAt, t.Version, crlf)
+		fmt.Fprintf(&b, "%s%s %s/%s %s %s %d %d%s",
+			cursor, box, shortID(t.UserID), shortID(t.ID), t.Kind, t.RPID, t.DeletedAt, t.Version, crlf)
 	}
 	return b.String()
 }
@@ -301,7 +301,7 @@ func purgeInteractive(ctx context.Context, st *store.Store, stdin *os.File, stdo
 	}
 	fmt.Fprintf(stdout, "将物理删除以下 %d 条：\n", len(chosen))
 	for _, t := range chosen {
-		fmt.Fprintf(stdout, "  %s %s %s %d %d\n", shortID(t.ID), t.Kind, t.RPID, t.DeletedAt, t.Version)
+		fmt.Fprintf(stdout, "  user=%s id=%s %s %s %d %d\n", shortID(t.UserID), shortID(t.ID), t.Kind, t.RPID, t.DeletedAt, t.Version)
 	}
 	fmt.Fprintf(stdout, msgPurgeConfirm, len(chosen))
 
@@ -315,7 +315,7 @@ func purgeInteractive(ctx context.Context, st *store.Store, stdin *os.File, stdo
 		return nil
 	}
 
-	n, err := st.PurgeIDs(ctx, sel.ids())
+	n, err := st.PurgeIDs(ctx, sel.refs())
 	if err != nil {
 		return err
 	}

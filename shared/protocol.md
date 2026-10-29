@@ -598,8 +598,8 @@ users(id TEXT PK, username TEXT UNIQUE, verifier BLOB, pw_salt BLOB, wrapped_key
       require_master_pw INTEGER, created_at INTEGER)
 devices(id TEXT PK, user_id TEXT, name TEXT, platform TEXT, pubkey BLOB, token_hash BLOB,
         revoked_at INTEGER, created_at INTEGER, last_seen INTEGER)
-items(id TEXT PK, user_id TEXT, kind TEXT, rp_id TEXT, ciphertext BLOB, nonce BLOB,
-      version INTEGER, updated_at INTEGER, deleted_at INTEGER, UNIQUE(user_id, id))
+items(user_id TEXT, id TEXT, kind TEXT, rp_id TEXT, ciphertext BLOB, nonce BLOB,
+      version INTEGER, updated_at INTEGER, deleted_at INTEGER, PRIMARY KEY(user_id, id))
 item_conflicts(id INTEGER PK AUTOINCREMENT, user_id TEXT, item_id TEXT,
                ciphertext BLOB, nonce BLOB, version INTEGER, updated_at INTEGER)
 pairs(code_id TEXT PK, user_id TEXT, code_hash BLOB, blob BLOB, pw_salt BLOB,
@@ -608,8 +608,8 @@ audit(id INTEGER PK AUTOINCREMENT, user_id TEXT, device_id TEXT, action TEXT, ts
 meta(key TEXT PK, value TEXT)          -- 存 seq 计数，键为 "seq:<user_id>"
 ```
 
-- M1 为单账号部署：`items.id` 是全局主键（schema 原样保留 `UNIQUE(user_id, id)`），
-  不同账号不得复用同一 item id。
+- `items` 主键是复合的 `(user_id, id)`：item id 由客户端自选，仅在账号内唯一，
+  不同账号可复用同一 item id（见 §10 偏差 11）。所有按 id 读写 `items` 的语句必须带 `user_id`。
 - `NULL` 与空 BLOB 语义不同：`pw_salt`/`wrapped_key`/`token_hash`/`deleted_at` 用 NULL 表示“无”。
 - `item_conflicts.version`：落败的**本次写入**记录其 `base_version`；被替换的**旧行**记录其服务端 `version`。
 - 审计 `action` 取值：`auth.token`、`items.apply`、`device.register`、`device.revoke`、
@@ -715,6 +715,12 @@ vkeyd policy set --db <path> --require-master-pw=<bool>
 9. **状态码细化**：配对码不存在=404、过期=410、已用/重复 code_id=409、密文超限=400、
    限流=429；原契约只写了部分。
 10. **`--set-require-master-pw` 缺省不改策略**（不是重置为 false），避免重启意外放宽策略。
+11. **`items` 主键由全局 `id` 改为复合主键 `(user_id, id)`**。原 schema 是
+    `id TEXT PRIMARY KEY + UNIQUE(user_id, id)`，M1 单账号下成立；多用户（`user_mode=admin`）
+    下不同账号写同名 item id 会触发全局 PK 冲突（500）。item id 由客户端自选，语义上只在
+    账号内唯一。服务端打开旧库时按 SQLite 官方 12 步流程自动迁移（行数不变、幂等）；
+    客户端协议字段不变，但所有依赖「id 全局唯一」的运维操作（如 `vkeyd purge` 的墓碑定位）
+    必须按 `(user_id, id)` 成对处理。
 
 ---
 

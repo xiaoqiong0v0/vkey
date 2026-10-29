@@ -134,6 +134,38 @@ GET  /api/v1/health
 
 鉴权：`Authorization: Bearer <device_token>` + `X-Vkey-Sig`（设备 Ed25519 对 `METHOD\nPATH\nsha256(body)\nts` 签名）+ `X-Vkey-Ts`（±120s），防 token 泄漏后直接拉库。
 
+### 4.4 多用户与开户（user_mode=admin）
+
+**模式**。配置项 `user_mode ∈ {single, admin}` 存于 sqlite `meta` 表（键 `user_mode`，缺省 `single`），由 `vkeyd policy set --user-mode <m>` 切换；`GET /api/v1/policy` 响应新增 `user_mode` 字段，客户端据此决定是否展示开户入口。
+
+- `single`（默认）：行为与 M1 完全一致——单账号、`vkeyd init` 开户、无 HTTP 注册。
+- `admin`：**没有任何 HTTP 自助注册**。`POST /auth/token` 只服务已存在账号（重新登录/加设备）；新账号只能由管理员用 CLI 签发一次性开户码后，客户端凭码绑定。
+
+**开户码机制**。`vkeyd user add <username> [--ttl 30m]`（仅 admin 模式，single 下直接拒绝）生成 `ENROLL-XXXX-XXXX`（去混淆字母表，剔除 I/O/0/1），stdout 固定输出 `username= / code= / code_id= / expires_at=` 四行便于脚本解析。存储在新表 `enroll_codes(id, username, code_hash, created_at, expires_at, used_at, revoked_at)`：
+
+- **只存 `SHA256(规范化明文)`**（规范化=去空白转大写，比对不区分大小写）；明文不落库、不进日志；
+- 默认 TTL 30 分钟、**单次使用**：`POST /api/v1/auth/enroll` 在**同一事务**内「验码 → 建用户 → 建首设备 → `UPDATE ... WHERE used_at IS NULL` 条件更新消费」，并发提交同一码至多一个成功（条件更新 + `code_hash` 唯一索引，见 `server/ASYNC.md` #10）；
+- 可撤销：`vkeyd user revoke <code_id>`；`vkeyd user list` 会列出待用码；
+- 错误语义：`invalid_code`（不存在/已用/已撤销/用户名绑定不一致，不区分细节）、`code_expired`（410）、`username_taken`（409）、`invalid_verifier`；限流 60/min/IP，与 `auth/token` 同一套中间件。
+
+**零知识边界（开户路径）**。客户端本地生成 32B `master_key`，上送 `verifier = HKDF-SHA256(master_key, salt="vkey-verifier", info=username)`；**服务端永远接触不到 master_key**，与既有配对协议同一口径。可选携带 `pw_salt + wrapped_key`（主密码包裹，规则与 `POST /auth/password` 一致），`verifier` 本身不可反推 `master_key`。响应 `{device_id, token, user_id, username}`，token 与 `/auth/token` 同语义（服务端只存 `SHA256(token)`）。
+
+**每用户配额**。三项均存 `meta`（`quota.*`），有默认、可由 `vkeyd policy set --max-*-per-user` 覆盖（`-1` 不限制）：
+
+| 配额 | 默认 | 口径 | 超限响应 |
+|---|---|---|---|
+| `max_items_per_user` | 1000 | `deleted_at IS NULL` 的活跃条目数 | 409 `quota_items` |
+| `max_bytes_per_user` | 20 MiB | 活跃条目 `length(ciphertext)` 合计 | 409 `quota_bytes` |
+| `max_devices_per_user` | 10 | 未吊销设备数 | 409 `quota_devices` |
+
+判定在写事务内完成：条目超限**整批回滚**（不部分生效、不占版本号）；设备超限覆盖 enroll / `auth/token` 新建 / `devices/register` / `pair/claim` 四条创建路径（同公钥幂等上线路径不受限）。
+
+**账号生命周期管理（CLI）**。`vkeyd user disable <username>|--id <id>` 写 `users.disabled_at`：该用户**全部设备立即 401**（`user_disabled`，每次请求实时判定）、重新认证与配对领取同样被拒（对外表现与错误凭据同类，防枚举）；`enable` 清空标记即恢复，数据保留。`vkeyd user delete <username>|--id <id>`：不带 `--yes` 只打印将删除的用户信息与各表行数（dry-run，不写库）；带 `--yes` 在单事务内级联删除 items / item_conflicts / devices / pairs / audit / 该用户名的 enroll_codes / seq meta / users 行。
+
+**数据隔离**。`items` 主键为复合主键 `(user_id, id)`——item id 由客户端自选、仅在账号内唯一，跨账号同名 id 互不影响；所有条目/设备/配对相关 SQL 一律带 `user_id` 条件（复合主键后这是正确性要求，不只是防越权；`vkeyd purge` 的墓碑定位同样按 `(user_id, id)` 成对处理）；`item_conflicts`、`pairs` 归属由行内 `user_id` 决定，claim 类跨账号操作（如吊销他设备）返回 404。
+
+**迁移**。旧库打开时自动 `ALTER TABLE users ADD COLUMN disabled_at INTEGER`（`PRAGMA table_info` 检查，幂等）；`items` 旧结构（全局 `id TEXT PRIMARY KEY`）按 SQLite 官方 12 步表重建流程迁移为 `PRIMARY KEY (user_id, id)`（行数不变、重复打开不改动数据，日志只报行数不报内容）；`enroll_codes` 由 `CREATE TABLE IF NOT EXISTS` 建出。库无需任何外部迁移步骤。
+
 ---
 
 ## 5. 各端实现要点

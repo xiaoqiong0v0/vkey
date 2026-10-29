@@ -9,6 +9,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -29,6 +30,19 @@ var (
 	ErrPairUsed = errors.New("store: 配对码已使用")
 	// ErrPairExpired 表示配对码已过期。
 	ErrPairExpired = errors.New("store: 配对码已过期")
+	// ErrEnrollInvalid 表示开户码不存在/已用/已撤销/缺少用户名绑定
+	//（对客户端统一表现为 invalid_code，不区分具体原因，防枚举）。
+	ErrEnrollInvalid = errors.New("store: 开户码无效")
+	// ErrEnrollExpired 表示开户码已过期。
+	ErrEnrollExpired = errors.New("store: 开户码已过期")
+	// ErrUserDisabled 表示账号已被管理员停用。
+	ErrUserDisabled = errors.New("store: 账号已停用")
+	// ErrQuotaItems 表示超出每用户条目数配额。
+	ErrQuotaItems = errors.New("store: 超出条目数配额")
+	// ErrQuotaBytes 表示超出每用户密文字节配额。
+	ErrQuotaBytes = errors.New("store: 超出密文字节配额")
+	// ErrQuotaDevices 表示超出每用户设备数配额。
+	ErrQuotaDevices = errors.New("store: 超出设备数配额")
 )
 
 // schema 是建库 DDL，与 shared/protocol.md §表结构 逐字段一致。
@@ -40,6 +54,7 @@ CREATE TABLE IF NOT EXISTS users (
     pw_salt           BLOB,
     wrapped_key       BLOB,
     require_master_pw INTEGER NOT NULL DEFAULT 0,
+    disabled_at       INTEGER,
     created_at        INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS devices (
@@ -54,7 +69,7 @@ CREATE TABLE IF NOT EXISTS devices (
     last_seen  INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS items (
-    id         TEXT PRIMARY KEY,
+    id         TEXT NOT NULL,
     user_id    TEXT NOT NULL,
     kind       TEXT NOT NULL,
     rp_id      TEXT NOT NULL,
@@ -63,7 +78,7 @@ CREATE TABLE IF NOT EXISTS items (
     version    INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     deleted_at INTEGER,
-    UNIQUE (user_id, id)
+    PRIMARY KEY (user_id, id)
 );
 CREATE TABLE IF NOT EXISTS item_conflicts (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -91,10 +106,21 @@ CREATE TABLE IF NOT EXISTS audit (
     action    TEXT NOT NULL,
     ts        INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS enroll_codes (
+    id         TEXT PRIMARY KEY,
+    username   TEXT NOT NULL DEFAULT '',
+    code_hash  BLOB NOT NULL,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    used_at    INTEGER,
+    revoked_at INTEGER
+);
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_enroll_code_hash ON enroll_codes(code_hash);
+CREATE INDEX IF NOT EXISTS idx_enroll_expires ON enroll_codes(expires_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_devices_token ON devices(token_hash) WHERE token_hash IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_devices_user_pub ON devices(user_id, pubkey);
 CREATE INDEX IF NOT EXISTS idx_items_version ON items(user_id, version);
@@ -111,6 +137,7 @@ type User struct {
 	PWSalt          []byte
 	WrappedKey      []byte
 	RequireMasterPW bool
+	DisabledAt      int64 // 0 表示启用；非 0 为停用时刻（unix 秒）
 	CreatedAt       int64
 }
 
@@ -235,7 +262,217 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("store: 建表失败: %w", err)
 	}
+	if err := migrateUsersDisabledAt(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := migrateItemsPK(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	return &Store{db: db}, nil
+}
+
+// migrateUsersDisabledAt 为旧库补上 users.disabled_at 列（已有则跳过）。
+//
+// 旧库由 CREATE TABLE IF NOT EXISTS 得到的是不含该列的 users 表，
+// 这里用 PRAGMA table_info 检查后执行一次 ALTER TABLE ADD COLUMN，
+// 保证旧库打开即可用，不需要外部迁移步骤。
+func migrateUsersDisabledAt(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(users)`)
+	if err != nil {
+		return fmt.Errorf("store: 读取 users 表结构失败: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var (
+			cid     int
+			name    string
+			typ     string
+			notnull int
+			dflt    sql.NullString
+			pk      int
+		)
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			return fmt.Errorf("store: 解析 users 表结构失败: %w", err)
+		}
+		if name == "disabled_at" {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("store: 读取 users 表结构失败: %w", err)
+	}
+	if _, err := db.Exec(`ALTER TABLE users ADD COLUMN disabled_at INTEGER`); err != nil {
+		return fmt.Errorf("store: 补 users.disabled_at 列失败: %w", err)
+	}
+	return nil
+}
+
+// migrateItemsPK 把旧库 items 表的全局主键 id 迁移为复合主键 (user_id, id)。
+//
+// 背景：多用户（user_mode=admin）下不同账号可写同名 item id，旧结构的全局
+// `id TEXT PRIMARY KEY` 会触发 PK 冲突（500）；复合主键后 id 仅在账号内唯一。
+// 检测：PRAGMA table_info(items) 中 user_id 列不参与主键（pk=0）即为旧结构。
+// 迁移：按 SQLite 官方 12 步 ALTER 流程（PRAGMA foreign_keys=OFF → BEGIN
+// IMMEDIATE → 建新表 → 整表拷贝 → DROP → RENAME → 重建索引 → foreign_key_check
+// → COMMIT → 恢复 foreign_keys）。当前 schema 没有任何外键引用 items
+// （item_conflicts 只按 (user_id, item_id) 逻辑关联），无需重建子表；
+// 流程仍执行 PRAGMA foreign_key_check 兜底。
+// 幂等：已迁移的库（user_id 参与主键）直接返回，不改动数据。
+// 日志：迁移前后各记录一条「items 主键迁移：N 行」，不含任何条目内容。
+func migrateItemsPK(db *sql.DB) error {
+	pkUser, hasID, err := itemsPKInfo(db)
+	if err != nil {
+		return err
+	}
+	if !hasID {
+		return errors.New("store: items 表缺少 id 列，无法迁移主键")
+	}
+	if pkUser {
+		return nil // 已是复合主键，跳过（幂等）
+	}
+
+	var before int64
+	if err := db.QueryRow(`SELECT COUNT(1) FROM items`).Scan(&before); err != nil {
+		return fmt.Errorf("store: 迁移前统计 items 失败: %w", err)
+	}
+	log.Printf("store: items 主键迁移开始：%d 行", before)
+
+	// PRAGMA foreign_keys 在事务内是 no-op，必须在 BEGIN 之前设置。
+	if _, err := db.Exec(`PRAGMA foreign_keys = OFF`); err != nil {
+		return fmt.Errorf("store: 迁移关闭外键约束失败: %w", err)
+	}
+	restored := false
+	defer func() {
+		if !restored {
+			_, _ = db.Exec(`PRAGMA foreign_keys = ON`)
+		}
+	}()
+
+	if err := migrateItemsPKTx(db, before); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`PRAGMA foreign_keys = ON`); err != nil {
+		return fmt.Errorf("store: 迁移恢复外键约束失败: %w", err)
+	}
+	restored = true
+	log.Printf("store: items 主键迁移完成：%d 行", before)
+	return nil
+}
+
+// migrateItemsPKTx 在 BEGIN IMMEDIATE ... COMMIT 内执行表重建，任一步失败即回滚。
+func migrateItemsPKTx(db *sql.DB, wantRows int64) error {
+	if _, err := db.Exec(`BEGIN IMMEDIATE`); err != nil {
+		return fmt.Errorf("store: 迁移开启事务失败: %w", err)
+	}
+	rollback := func() { _, _ = db.Exec(`ROLLBACK`) }
+
+	// 单连接池（MaxOpenConns=1）保证以下语句与事务落在同一连接上。
+	const createNew = `
+CREATE TABLE items_new (
+    id         TEXT NOT NULL,
+    user_id    TEXT NOT NULL,
+    kind       TEXT NOT NULL,
+    rp_id      TEXT NOT NULL,
+    ciphertext BLOB,
+    nonce      BLOB,
+    version    INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    deleted_at INTEGER,
+    PRIMARY KEY (user_id, id)
+)`
+	if _, err := db.Exec(createNew); err != nil {
+		rollback()
+		return fmt.Errorf("store: 迁移创建 items_new 失败: %w", err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO items_new(id, user_id, kind, rp_id, ciphertext, nonce, version, updated_at, deleted_at)
+		 SELECT id, user_id, kind, rp_id, ciphertext, nonce, version, updated_at, deleted_at FROM items`); err != nil {
+		rollback()
+		return fmt.Errorf("store: 迁移拷贝 items 数据失败: %w", err)
+	}
+	var copied int64
+	if err := db.QueryRow(`SELECT COUNT(1) FROM items_new`).Scan(&copied); err != nil {
+		rollback()
+		return fmt.Errorf("store: 迁移统计 items_new 失败: %w", err)
+	}
+	if copied != wantRows {
+		rollback()
+		return fmt.Errorf("store: 迁移行数不一致（items %d → items_new %d），已回滚", wantRows, copied)
+	}
+	if _, err := db.Exec(`DROP TABLE items`); err != nil {
+		rollback()
+		return fmt.Errorf("store: 迁移删除旧 items 失败: %w", err)
+	}
+	if _, err := db.Exec(`ALTER TABLE items_new RENAME TO items`); err != nil {
+		rollback()
+		return fmt.Errorf("store: 迁移重命名 items_new 失败: %w", err)
+	}
+	// 旧索引随 DROP TABLE 一起消失，按 schema 原样重建。
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_items_version ON items(user_id, version)`); err != nil {
+		rollback()
+		return fmt.Errorf("store: 迁移重建索引失败: %w", err)
+	}
+	// 兜底：确认没有违反外键约束的行（当前 schema 无引用 items 的外键）。
+	rows, err := db.Query(`PRAGMA foreign_key_check`)
+	if err != nil {
+		rollback()
+		return fmt.Errorf("store: 迁移外键检查失败: %w", err)
+	}
+	var violations int
+	for rows.Next() {
+		violations++
+	}
+	closeErr := rows.Err()
+	_ = rows.Close()
+	if closeErr != nil {
+		rollback()
+		return fmt.Errorf("store: 迁移外键检查遍历失败: %w", closeErr)
+	}
+	if violations > 0 {
+		rollback()
+		return fmt.Errorf("store: 迁移外键检查发现 %d 条违规，已回滚", violations)
+	}
+	if _, err := db.Exec(`COMMIT`); err != nil {
+		rollback()
+		return fmt.Errorf("store: 迁移提交失败: %w", err)
+	}
+	return nil
+}
+
+// itemsPKInfo 读取 items 表的主键形态。
+//
+// 返回：pkUser=user_id 是否参与主键；hasID=id 列是否存在。
+func itemsPKInfo(db *sql.DB) (pkUser bool, hasID bool, err error) {
+	rows, err := db.Query(`PRAGMA table_info(items)`)
+	if err != nil {
+		return false, false, fmt.Errorf("store: 读取 items 表结构失败: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var (
+			cid     int
+			name    string
+			typ     string
+			notnull int
+			dflt    sql.NullString
+			pk      int
+		)
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			return false, false, fmt.Errorf("store: 解析 items 表结构失败: %w", err)
+		}
+		switch name {
+		case "user_id":
+			pkUser = pk > 0
+		case "id":
+			hasID = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, false, fmt.Errorf("store: 读取 items 表结构失败: %w", err)
+	}
+	return pkUser, hasID, nil
 }
 
 // Close 关闭数据库连接。
@@ -243,6 +480,31 @@ func (s *Store) Close() error { return s.db.Close() }
 
 // DB 返回底层连接，仅供同进程内的测试与维护命令使用。
 func (s *Store) DB() *sql.DB { return s.db }
+
+// Quota 是每用户配额；值为负数表示不限制，0 表示一项都不允许。
+type Quota struct {
+	MaxItems   int64 // 活跃条目数上限
+	MaxBytes   int64 // 活跃条目密文字节合计上限
+	MaxDevices int64 // 未吊销设备数上限
+}
+
+// checkDeviceSlot 在新建设备前校验设备数配额（事务内读取，保证与插入同事务串行）。
+//
+// 返回：超限时返回 ErrQuotaDevices；q.MaxDevices 为负数时不限制。
+func checkDeviceSlot(ctx context.Context, tx *sql.Tx, userID string, q Quota) error {
+	if q.MaxDevices < 0 {
+		return nil
+	}
+	var n int64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(1) FROM devices WHERE user_id = ? AND revoked_at IS NULL`, userID).Scan(&n); err != nil {
+		return fmt.Errorf("store: 统计设备失败: %w", err)
+	}
+	if n >= q.MaxDevices {
+		return ErrQuotaDevices
+	}
+	return nil
+}
 
 // newID 生成 16 字节随机 id 的 base64url 形式（22 字符）。
 func newID() (string, error) {
@@ -284,19 +546,27 @@ func (s *Store) CreateUser(ctx context.Context, u User) error {
 	return nil
 }
 
+// userColumns 是账号读取的统一列清单（新增列时只改这里）。
+const userColumns = `id, username, verifier, pw_salt, wrapped_key, require_master_pw, disabled_at, created_at`
+
 // UserByUsername 按用户名查询账号，不存在时返回 ErrNotFound。
 func (s *Store) UserByUsername(ctx context.Context, username string) (*User, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, username, verifier, pw_salt, wrapped_key, require_master_pw, created_at
-		 FROM users WHERE username = ?`, username)
+		`SELECT `+userColumns+` FROM users WHERE username = ?`, username)
+	return scanUser(row)
+}
+
+// UserByID 按 id 查询账号，不存在时返回 ErrNotFound。
+func (s *Store) UserByID(ctx context.Context, id string) (*User, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT `+userColumns+` FROM users WHERE id = ?`, id)
 	return scanUser(row)
 }
 
 // FirstUser 返回最早创建的账号（单用户部署即唯一账号），不存在时返回 ErrNotFound。
 func (s *Store) FirstUser(ctx context.Context) (*User, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, username, verifier, pw_salt, wrapped_key, require_master_pw, created_at
-		 FROM users ORDER BY created_at ASC, id ASC LIMIT 1`)
+		`SELECT `+userColumns+` FROM users ORDER BY created_at ASC, id ASC LIMIT 1`)
 	return scanUser(row)
 }
 
@@ -370,12 +640,13 @@ func (s *Store) Audit(ctx context.Context, userID, deviceID, action string, ts i
 // scanUser 把一行用户记录解析为 User。
 func scanUser(row *sql.Row) (*User, error) {
 	var (
-		u    User
-		req  int
-		salt []byte
-		wrap []byte
+		u       User
+		req     int
+		salt    []byte
+		wrap    []byte
+		disabled sql.NullInt64
 	)
-	err := row.Scan(&u.ID, &u.Username, &u.Verifier, &salt, &wrap, &req, &u.CreatedAt)
+	err := row.Scan(&u.ID, &u.Username, &u.Verifier, &salt, &wrap, &req, &disabled, &u.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -383,6 +654,7 @@ func scanUser(row *sql.Row) (*User, error) {
 		return nil, fmt.Errorf("store: 读取用户失败: %w", err)
 	}
 	u.PWSalt, u.WrappedKey, u.RequireMasterPW = salt, wrap, req != 0
+	u.DisabledAt = disabled.Int64
 	return &u, nil
 }
 

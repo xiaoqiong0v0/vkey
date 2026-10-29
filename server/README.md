@@ -5,14 +5,15 @@ vkey 的零知识同步服务端：只保存 verifier、设备公钥与**条目�
 
 - 语言/驱动：Go 1.27.3 + 纯 Go sqlite（`modernc.org/sqlite`，无 CGO）
 - 形态：单二进制；TLS 由 nginx 终止，本进程只监听回环
-- 范围：单账号、条目同步、设备认证、扫码配对、引导脚本、主页（唯一入口，含 APK 下载）
+- 范围：条目同步、设备认证、扫码配对、引导脚本、主页（唯一入口，含 APK 下载）；
+  用户模式 `single`（默认，单账号）/ `admin`（多用户，仅 CLI 开户，见下）
 
 ## 目录
 
 ```
 server/
 ├── cmd/
-│   ├── vkeyd/          # 服务端 CLI（init / serve / policy set / purge）
+│   ├── vkeyd/          # 服务端 CLI（init / serve / policy set / user / purge）
 │   └── genvectors/     # 重新生成 shared/vectors/*.json
 ├── internal/
 │   ├── api/            # 路由、鉴权中间件、handlers、页面、限流
@@ -38,8 +39,10 @@ go run ./cmd/vkeyd init --db ../.tmp/scratch/vkey.db
 go run ./cmd/vkeyd serve --db ../.tmp/scratch/vkey.db --listen 127.0.0.1:3150 \
   --domain vkey.xiaoqiong0v0.cn
 
-# 改策略
+# 改策略（主密码 / 用户模式 / 每用户配额，-1 表示不限制）
 go run ./cmd/vkeyd policy set --db ../.tmp/scratch/vkey.db --require-master-pw=true
+go run ./cmd/vkeyd policy set --db ../.tmp/scratch/vkey.db --user-mode=admin --max-items-per-user=2000
+go run ./cmd/vkeyd policy set --db ../.tmp/scratch/vkey.db --max-bytes-per-user=50MiB --max-devices-per-user=20
 
 # 清理墓碑（终端里不带开关 = 交互式勾选：空格选择、回车列出、y 删除）
 go run ./cmd/vkeyd purge --db ../.tmp/scratch/vkey.db
@@ -56,6 +59,46 @@ go run ./cmd/vkeyd purge --db ../.tmp/scratch/vkey.db --yes
 - `--master-key` 缺省时生成 32B 随机值；
 - stdout **只有一行** `master_key: <base32 无填充>`，其余信息走 stderr；
 - 重复 init 返回非 0（避免覆盖已有库）。
+
+## 多用户（admin 模式）
+
+`user_mode` 存库（meta 键 `user_mode`），默认 `single`（行为与 M1 一致，无 HTTP 注册）。
+切到 `admin` 后由管理员 CLI 开户，**没有自助注册接口**；客户端凭一次性开户码调用
+`POST /api/v1/auth/enroll`（`master_key` 在客户端本地生成，服务端只收 `verifier`，
+零知识边界不变）。机制细节见仓库根 `docs/design.md` §4.4。
+
+```bash
+# 1) 切换到 admin 模式
+go run ./cmd/vkeyd policy set --db ../.tmp/scratch/vkey.db --user-mode=admin
+
+# 2) 开户：签发一次性开户码（默认 30 分钟；stdout 为固定 key=value 四行）
+go run ./cmd/vkeyd user add alice --db ../.tmp/scratch/vkey.db
+#   username=alice
+#   code=ENROLL-XXXX-XXXX
+#   code_id=<可撤销用的 id>
+#   expires_at=<unix 秒>
+
+# 3) 客户端凭码绑定（verifier=HKDF(master_key,"alice")，本地算）：
+curl -X POST https://<server>/api/v1/auth/enroll -H 'Content-Type: application/json' \
+  -d '{"code":"ENROLL-XXXX-XXXX","username":"alice","verifier":"<base64url(32B)>",
+       "device":{"name":"pixel","platform":"android","pubkey":"<base64url(32B)>"}}'
+# → 200 {"device_id","token","user_id","username"}；token 与 /auth/token 同语义
+# 错误：invalid_code / code_expired(410) / username_taken(409) / invalid_verifier；限流 60/min/IP
+
+# 4) 账号管理
+go run ./cmd/vkeyd user list --db ../.tmp/scratch/vkey.db            # 账号 + 待用开户码
+go run ./cmd/vkeyd user revoke <code_id> --db ../.tmp/scratch/vkey.db # 撤销未用开户码
+go run ./cmd/vkeyd user disable alice --db ../.tmp/scratch/vkey.db    # 全部设备立即 401，数据保留
+go run ./cmd/vkeyd user enable --id <user_id> --db ../.tmp/scratch/vkey.db
+go run ./cmd/vkeyd user delete alice --db ../.tmp/scratch/vkey.db     # 不带 --yes：只打印将删除的行数
+go run ./cmd/vkeyd user delete alice --db ../.tmp/scratch/vkey.db --yes  # 二次确认：级联删除
+
+# 5) 每用户配额（默认 items=1000 / bytes=20MiB / devices=10；-1 不限制）
+go run ./cmd/vkeyd policy set --db ../.tmp/scratch/vkey.db --max-items-per-user=500
+```
+
+超限响应统一 `409` + `error.code ∈ {quota_items, quota_bytes, quota_devices}`；
+条目超限整批回滚。日志只记 user_id/username/结果码，绝不记 code/verifier/token。
 
 ## 测试
 

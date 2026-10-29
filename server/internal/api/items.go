@@ -94,6 +94,9 @@ func (s *Server) handlePostItems(w http.ResponseWriter, r *http.Request, dev *st
 
 	results, err := s.store.ApplyItems(r.Context(), dev.UserID, inputs)
 	if err != nil {
+		if writeQuotaErr(w, err) {
+			return
+		}
 		s.logErr("应用条目失败", err)
 		writeErr(w, http.StatusInternalServerError, "internal", "服务端内部错误")
 		return

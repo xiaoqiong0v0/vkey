@@ -13,7 +13,9 @@ import (
 
 // policyResponse 是 GET /api/v1/policy 的响应体。
 type policyResponse struct {
-	RequireMasterPW bool `json:"require_master_pw"`
+	// UserMode 是服务端用户模式："single"（默认）或 "admin"（多用户，仅 CLI 开户）。
+	UserMode        string `json:"user_mode"`
+	RequireMasterPW bool   `json:"require_master_pw"`
 	// RequireMasterPWEnforced 表示「策略要求主密码」且「服务端确实存有包裹」，
 	// 客户端只有在这种情况下才能用密码解包；否则必须报错而不是静默放行。
 	RequireMasterPWEnforced bool       `json:"require_master_pw_enforced"`
@@ -74,7 +76,13 @@ type okResponse struct {
 
 // handlePolicy 返回服务端策略（免鉴权）。
 func (s *Server) handlePolicy(w http.ResponseWriter, r *http.Request) {
-	resp := policyResponse{KDF: policy.KDFParams()}
+	mode, err := s.store.UserMode(r.Context())
+	if err != nil {
+		s.logErr("查询用户模式失败", err)
+		writeErr(w, http.StatusInternalServerError, "internal", "服务端内部错误")
+		return
+	}
+	resp := policyResponse{UserMode: mode, KDF: policy.KDFParams()}
 	u, err := s.firstUser(r.Context())
 	switch {
 	case err == nil:
@@ -156,6 +164,11 @@ func (s *Server) handleAuthToken(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnauthorized, "invalid_credentials", "用户名或 verifier 不正确")
 		return
 	}
+	// 已停用账号的重新认证同样返回 invalid_credentials：不向外暴露「停用」状态，防枚举。
+	if u.DisabledAt != 0 {
+		writeErr(w, http.StatusUnauthorized, "invalid_credentials", "用户名或 verifier 不正确")
+		return
+	}
 
 	token, err := crypto.NewToken()
 	if err != nil {
@@ -166,6 +179,9 @@ func (s *Server) handleAuthToken(w http.ResponseWriter, r *http.Request) {
 	deviceID, err := s.store.UpsertDevice(r.Context(), u.ID, req.Device.Name, req.Device.Platform,
 		pubkey, crypto.TokenHash(token), s.nowUnix())
 	if err != nil {
+		if writeQuotaErr(w, err) {
+			return
+		}
 		s.logErr("upsert 设备失败", err)
 		writeErr(w, http.StatusInternalServerError, "internal", "服务端内部错误")
 		return

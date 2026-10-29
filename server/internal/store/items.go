@@ -23,7 +23,14 @@ const (
 // 返回：与入参顺序一一对应的结果；事务失败时返回错误。
 //
 // 并发契约：version 的读取与递增都在同一事务内完成（见 ASYNC.md）。
+//
+// 配额：批内全部 applied 后，在同一事务内统计「活跃条目数」与「密文字节合计」，
+// 任一超限即整批回滚并返回 ErrQuotaItems / ErrQuotaBytes（409 语义，不部分生效）。
 func (s *Store) ApplyItems(ctx context.Context, userID string, in []ItemInput) ([]ItemResult, error) {
+	q, err := s.Quotas(ctx)
+	if err != nil {
+		return nil, err
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("store: 开启事务失败: %w", err)
@@ -46,10 +53,40 @@ func (s *Store) ApplyItems(ctx context.Context, userID string, in []ItemInput) (
 	if err := seqPut(ctx, tx, userID, seq); err != nil {
 		return nil, err
 	}
+	if err := checkItemQuota(ctx, tx, userID, q); err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("store: 提交事务失败: %w", err)
 	}
 	return results, nil
+}
+
+// checkItemQuota 在事务内统计该账号的活跃条目数与密文字节合计并对照配额。
+//
+// 统计口径：deleted_at IS NULL 的行；密文字节 = length(ciphertext)。
+// 返回：超限时 ErrQuotaItems / ErrQuotaBytes（条目数优先）；配额为负数时不限制。
+func checkItemQuota(ctx context.Context, tx *sql.Tx, userID string, q Quota) error {
+	if q.MaxItems < 0 && q.MaxBytes < 0 {
+		return nil
+	}
+	var (
+		count int64
+		bytes int64
+	)
+	err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(1), COALESCE(SUM(LENGTH(ciphertext)), 0)
+		 FROM items WHERE user_id = ? AND deleted_at IS NULL`, userID).Scan(&count, &bytes)
+	if err != nil {
+		return fmt.Errorf("store: 统计条目配额失败: %w", err)
+	}
+	if q.MaxItems >= 0 && count > q.MaxItems {
+		return ErrQuotaItems
+	}
+	if q.MaxBytes >= 0 && bytes > q.MaxBytes {
+		return ErrQuotaBytes
+	}
+	return nil
 }
 
 // applyOne 处理单条条目并返回结果与更新后的 seq。

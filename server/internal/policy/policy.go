@@ -1,7 +1,8 @@
 // Package policy 集中定义协议层面的固定参数与服务端策略视图。
 //
-// 服务端策略只有一项可变值（是否强制主密码），其余参数（KDF 参数、超时、
-// 上限）都是协议常量，编译期固定，客户端不得依赖服务端下发以外的取值。
+// 可变策略为：是否强制主密码、用户模式（single/admin）与每用户配额
+// （三项配额都有默认值，可由 `vkeyd policy set` 覆盖）；其余参数（KDF 参数、
+// 超时、上限）是协议常量，编译期固定，客户端不得依赖服务端下发以外的取值。
 package policy
 
 import (
@@ -36,6 +37,34 @@ const (
 	MaxPlatformBytes = 32
 	// MaxUsernameBytes 是账号名长度上限。
 	MaxUsernameBytes = 128
+
+	// EnrollTTLSeconds 是开户码默认有效期（30 分钟）。
+	EnrollTTLSeconds = 1800
+	// DefaultMaxItemsPerUser 是每用户活跃条目数默认配额。
+	DefaultMaxItemsPerUser = 1000
+	// DefaultMaxBytesPerUser 是每用户密文字节合计默认配额（20 MiB）。
+	DefaultMaxBytesPerUser = 20 << 20
+	// DefaultMaxDevicesPerUser 是每用户未吊销设备数默认配额。
+	DefaultMaxDevicesPerUser = 10
+)
+
+// 用户模式取值（存于 meta 表，见 store.UserMode）。
+const (
+	// UserModeSingle 是单账号模式：无自助注册，行为与 M1 完全一致（默认）。
+	UserModeSingle = "single"
+	// UserModeAdmin 是多用户模式：只能由管理员用 CLI 开户（一次性开户码）。
+	UserModeAdmin = "admin"
+)
+
+// 开户码展示格式常量：`ENROLL-XXXX-XXXX`，XXXX 取自去混淆字母表
+//（剔除易混字符 I/O/0/1），共 32 个字符、8 位随机。
+const (
+	// EnrollCodePrefix 是开户码固定前缀。
+	EnrollCodePrefix = "ENROLL"
+	// EnrollCodeGroupSize 是开户码随机段的分组大小与组数（2 组）。
+	EnrollCodeGroupSize = 4
+	// EnrollCodeGroups 是开户码随机段组数。
+	EnrollCodeGroups = 2
 )
 
 // KDF 是下发给客户端的 Argon2id 参数。

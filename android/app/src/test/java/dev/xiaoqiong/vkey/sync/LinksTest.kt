@@ -281,4 +281,105 @@ class LinksTest {
         assertNull(Links.parseEnrollLink("vkey://config?server=https://a.b"))
         assertNull(Links.parseEnrollLink("otpauth://totp/a?secret=JBSWY3DPEHPK3PXP"))
     }
+
+    // ------------------------------------------------------------------
+    // 开户落地页 http(s)://<host>/join?c=…
+    // ------------------------------------------------------------------
+
+    @Test
+    fun `parseJoinUrl 正常解析 code 与 host`() {
+        assertEquals(
+            EnrollTarget("ENROLL-GMGH-ZYKF", "http://10.0.2.2:3150", null),
+            Links.parseJoinUrl("http://10.0.2.2:3150/join?c=ENROLL-GMGH-ZYKF"),
+        )
+    }
+
+    @Test
+    fun `parseJoinUrl 支持 http 与 https`() {
+        assertEquals(
+            EnrollTarget("ENROLL-AB12-CD34", "https://vkey.example.com", null),
+            Links.parseJoinUrl("https://vkey.example.com/join?c=ENROLL-AB12-CD34"),
+        )
+        assertEquals(
+            EnrollTarget("ENROLL-AB12-CD34", "http://vkey.example.com", null),
+            Links.parseJoinUrl("http://vkey.example.com/join?c=ENROLL-AB12-CD34"),
+        )
+    }
+
+    @Test
+    fun `parseJoinUrl 忽略其它参数与参数顺序`() {
+        assertEquals(
+            EnrollTarget("ENROLL-AB12-CD34", "https://a.b", "dl1"),
+            Links.parseJoinUrl("https://a.b/join?from=qr&username=dl1&c=ENROLL-AB12-CD34&x=1"),
+        )
+    }
+
+    @Test
+    fun `parseJoinUrl 忽略 fragment`() {
+        assertEquals(
+            EnrollTarget("ENROLL-AB12-CD34", "https://a.b:8443", null),
+            Links.parseJoinUrl("https://a.b:8443/join?c=ENROLL-AB12-CD34#step-2"),
+        )
+    }
+
+    @Test
+    fun `parseJoinUrl 容忍尾部斜杠大小写与空格`() {
+        assertEquals(
+            EnrollTarget("ENROLL-AB12-CD34", "https://A.b", null),
+            Links.parseJoinUrl("  HTTPS://A.b/Join/?c=enroll-ab12-cd34 \n"),
+        )
+    }
+
+    @Test
+    fun `parseJoinUrl 缺 c 返回 null`() {
+        assertNull(Links.parseJoinUrl("https://a.b/join"))
+        assertNull(Links.parseJoinUrl("https://a.b/join?c="))
+        assertNull(Links.parseJoinUrl("https://a.b/join?from=qr"))
+    }
+
+    @Test
+    fun `parseJoinUrl 非法 code 返回 null`() {
+        assertNull(Links.parseJoinUrl("https://a.b/join?c=BAD"))
+        assertNull(Links.parseJoinUrl("https://a.b/join?c=ENROLL-AB1-CD34"))
+        // 裸配对码不是开户码
+        assertNull(Links.parseJoinUrl("https://a.b/join?c=" + Base32.encode(ByteArray(32))))
+    }
+
+    @Test
+    fun `parseJoinUrl 拒绝非 join 路径与非 http 协议`() {
+        assertNull(Links.parseJoinUrl("https://a.b/pair?c=ENROLL-AB12-CD34"))
+        assertNull(Links.parseJoinUrl("https://a.b/join/deep?c=ENROLL-AB12-CD34"))
+        assertNull(Links.parseJoinUrl("https://a.b/?c=ENROLL-AB12-CD34"))
+        assertNull(Links.parseJoinUrl("ftp://a.b/join?c=ENROLL-AB12-CD34"))
+        assertNull(Links.parseJoinUrl("vkey://enroll?server=https://a.b&code=ENROLL-AB12-CD34"))
+        assertNull(Links.parseJoinUrl("https:///join?c=ENROLL-AB12-CD34"))
+    }
+
+    @Test
+    fun `parseJoinUrl 容忍 percent-encoded 值`() {
+        assertEquals(
+            EnrollTarget("ENROLL-AB12-CD34", "https://a.b", "u 1"),
+            Links.parseJoinUrl("https://a.b/join?c=ENROLL-AB12-CD34&username=u%201"),
+        )
+    }
+
+    @Test
+    fun `classify 识别开户深链与 join 链接并带出地址`() {
+        assertEquals(
+            ScanLink.EnrollCode("ENROLL-AB12-CD34", "https://a.b", "u2"),
+            Links.classify("vkey://enroll?server=https://a.b&code=ENROLL-AB12-CD34&username=u2"),
+        )
+        assertEquals(
+            ScanLink.EnrollCode("ENROLL-GMGH-ZYKF", "http://10.0.2.2:3150", null),
+            Links.classify("http://10.0.2.2:3150/join?c=ENROLL-GMGH-ZYKF"),
+        )
+    }
+
+    @Test
+    fun `classify 裸开户码不带地址`() {
+        assertEquals(
+            ScanLink.EnrollCode("ENROLL-AB12-CD34", null, null),
+            Links.classify("  enroll-ab12-cd34 "),
+        )
+    }
 }

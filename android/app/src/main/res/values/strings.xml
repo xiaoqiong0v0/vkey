@@ -29,6 +29,7 @@
     <!-- ============ 深链提示 ============ -->
     <string name="toast_server_set">服务器地址已设置：%1$s</string>
     <string name="toast_pair_code_detected">已识别配对码，请在「同步配置」里领取</string>
+    <string name="toast_enroll_already_logged_in">当前已登录 %1$s，无需开户；如需换账号请先在设置里解除绑定</string>
     <string name="err_deep_link_invalid">链接无效或已过期</string>
 
     <!-- ============ 主页 ============ -->

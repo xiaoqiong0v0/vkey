@@ -17,8 +17,17 @@ sealed interface ScanLink {
     /** 配对码链接或裸配对码。 */
     data class PairCode(val code: String) : ScanLink
 
-    /** 开户码文本（`ENROLL-XXXX-XXXX`，服务端管理员签发）。 */
-    data class EnrollCode(val code: String) : ScanLink
+    /**
+     * 开户码（`ENROLL-XXXX-XXXX`，服务端管理员签发）。
+     *
+     * 三种来源同一类别：裸码、`vkey://enroll?…` 深链、服务端 `/join?c=…` 落地页链接；
+     * 后两种还会带出服务端地址与用户名（裸码时为 null）。
+     */
+    data class EnrollCode(
+        val code: String,
+        val serverUrl: String? = null,
+        val username: String? = null,
+    ) : ScanLink
 }
 
 /**
@@ -29,6 +38,19 @@ sealed interface ScanLink {
  * @property username 链接附带的用户名；缺省或空白时为 null
  */
 data class EnrollDeepLink(val serverUrl: String, val code: String, val username: String?)
+
+/**
+ * 开户入口解析结果（服务端 `/join?c=…` 落地页链接）。
+ *
+ * @property code 规范化后的开户码（`ENROLL-XXXX-XXXX`）
+ * @property serverUrl 链接自带的服务端地址（只保留 `scheme://host[:port]`）；裸码场景为 null
+ * @property username 链接附带的用户名；缺省或空白时为 null
+ */
+data class EnrollTarget(
+    val code: String,
+    val serverUrl: String? = null,
+    val username: String? = null,
+)
 
 /**
  * 深链与配对码文本解析（纯 JVM，便于单元测试）。
@@ -48,6 +70,9 @@ object Links {
     /** 开户深链前缀（与服务端 `join.go` 的 `deepLinkEnrollPrefix` 一致）。 */
     const val ENROLL_PREFIX: String = "vkey://enroll"
 
+    /** 服务端开户落地页路径（`http(s)://<host>/join?c=<CODE>`）。 */
+    const val JOIN_PATH: String = "/join"
+
     /** 配对码 / master_key 均为 32B，base32 无填充后固定 52 字符。 */
     private const val KEY_BYTES = 32
     private const val KEY_CHARS = 52
@@ -61,6 +86,9 @@ object Links {
     private const val PARAM_SERVER = "server"
     private const val PARAM_CODE = "code"
     private const val PARAM_USERNAME = "username"
+
+    /** `/join` 落地页上携带开户码的参数名（服务端 `join.go` 用 `c`）。 */
+    private const val PARAM_JOIN_CODE = "c"
 
     /**
      * 解析同步配置深链里的服务器地址。
@@ -103,6 +131,42 @@ object Links {
             ?.trim()
             ?.takeIf { it.isNotEmpty() }
         return EnrollDeepLink(server, code, username)
+    }
+
+    /**
+     * 解析服务端开户落地页链接 `http(s)://<host>[:port]/join?c=<CODE>[&username=…]`。
+     *
+     * 容忍查询串里的其它参数与任意参数顺序，`#fragment` 会被忽略；`c` 缺省或码非法时整体无效。
+     * 返回的服务端地址只保留 `scheme://host[:port]`（丢弃 `/join` 路径与查询串），
+     * 与 [parseServerConfig] 拿到的地址同形，可直接写进 AppSettings。
+     *
+     * @param raw 扫码或粘贴原文
+     * @return 解析结果；不是 http(s) 的 `/join` 链接、缺少 `c` 或码非法时返回 null
+     */
+    fun parseJoinUrl(raw: String): EnrollTarget? {
+        val text = raw.trim()
+        val scheme = when {
+            text.startsWith("https://", ignoreCase = true) -> "https"
+            text.startsWith("http://", ignoreCase = true) -> "http"
+            else -> return null
+        }
+        val rest = text.substring(scheme.length + 3).substringBefore('#')
+        val authority = rest.substringBefore('/')
+        if (authority.isEmpty()) return null
+        val tail = rest.substring(authority.length)
+        val path = tail.substringBefore('?')
+        // 只认 `/join`（容忍尾部斜杠与大小写），其它路径不是开户落地页
+        if (!path.trimEnd('/').equals(JOIN_PATH, ignoreCase = true)) return null
+        val query = tail.substringAfter('?', "")
+        val code = queryParam(query, PARAM_JOIN_CODE)
+            ?.let(::decodeQueryValue)
+            ?.let(::parseEnrollCode)
+            ?: return null
+        val username = queryParam(query, PARAM_USERNAME)
+            ?.let(::decodeQueryValue)
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+        return EnrollTarget(code, "$scheme://$authority", username)
     }
 
     /**
@@ -151,7 +215,8 @@ object Links {
     }
 
     /**
-     * 按「配置深链 → 配对码深链 → 开户码 → 裸配对码」的顺序识别扫码内容。
+     * 按「配置深链 → 配对码深链 → 开户码（`vkey://enroll` 深链 → `/join?c=` 链接 → 裸码）
+     * → 裸配对码」的顺序识别扫码内容。
      *
      * @param raw 扫码内容原文
      * @return 识别结果；都不是时返回 null（调用方再尝试 `otpauth://`）
@@ -159,6 +224,8 @@ object Links {
     fun classify(raw: String): ScanLink? {
         parseServerConfig(raw)?.let { return ScanLink.ServerConfig(it) }
         parsePairCodeLink(raw)?.let { return ScanLink.PairCode(it) }
+        parseEnrollLink(raw)?.let { return ScanLink.EnrollCode(it.code, it.serverUrl, it.username) }
+        parseJoinUrl(raw)?.let { return ScanLink.EnrollCode(it.code, it.serverUrl, it.username) }
         parseEnrollCode(raw)?.let { return ScanLink.EnrollCode(it) }
         parseBarePairCode(raw)?.let { return ScanLink.PairCode(it) }
         return null

@@ -56,6 +56,7 @@ import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
 import dev.xiaoqiong.vkey.R
+import dev.xiaoqiong.vkey.sync.EnrollTarget
 import dev.xiaoqiong.vkey.sync.Links
 import dev.xiaoqiong.vkey.sync.ScanLink
 import dev.xiaoqiong.vkey.ui.theme.CameraBackground
@@ -86,7 +87,7 @@ enum class ScanMode {
     /** 设置 → 「服务端地址」卡片：只接受 `http(s)://…` 或 `vkey://config?server=…`。 */
     CONFIG_LINK,
 
-    /** 设置 → 「用开户码接入」卡片：只接受 `ENROLL-XXXX-XXXX`。 */
+    /** 设置 → 「用开户码接入」卡片：接受 `ENROLL-XXXX-XXXX`、`vkey://enroll?…` 与 `/join?c=…`。 */
     ENROLL,
 
     /** 配对码相关入口：接受配对码（深链或裸码），也接受服务端 /pair 页的地址码。 */
@@ -113,7 +114,7 @@ enum class ScanMode {
  * @param onResult 解析出的 TOTP 条目（null 表示本次扫码不是用来加 TOTP）
  * @param onConfigLink 识别到同步配置深链 / 服务器地址，参数为服务器地址
  * @param onPairCode 识别到配对码（深链或裸码），参数为原文
- * @param onEnrollCode 识别到开户码（`ENROLL-XXXX-XXXX`），参数为规范化原文
+ * @param onEnrollCode 识别到开户码，参数含规范化代码与（深链 / `/join` 链接才有的）服务端地址、用户名
  * @param onCancel 用户取消
  */
 @Composable
@@ -122,7 +123,7 @@ fun ScanScreen(
     onResult: ((TotpItem) -> Unit)? = null,
     onConfigLink: ((String) -> Unit)? = null,
     onPairCode: ((String) -> Unit)? = null,
-    onEnrollCode: ((String) -> Unit)? = null,
+    onEnrollCode: ((EnrollTarget) -> Unit)? = null,
     onCancel: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -424,8 +425,12 @@ internal sealed interface ScanContent {
         override val kind: ScanKind get() = ScanKind.PAIR_CODE
     }
 
-    /** 开户码 `ENROLL-XXXX-XXXX`（已规范化）。 */
-    data class EnrollCode(val code: String) : ScanContent {
+    /** 开户码 `ENROLL-XXXX-XXXX`（已规范化）；深链 / `/join` 链接还带服务端地址与用户名。 */
+    data class EnrollCode(
+        val code: String,
+        val serverUrl: String? = null,
+        val username: String? = null,
+    ) : ScanContent {
         override val kind: ScanKind get() = ScanKind.ENROLL_CODE
     }
 
@@ -454,7 +459,8 @@ internal sealed interface ScanOutcome {
 /**
  * 识别一段扫码/粘贴文本的类别（不做 mode 过滤，也不依赖 Android 环境）。
  *
- * 顺序：同步配置深链 → 配对码深链 → 开户码 → 裸配对码 → `otpauth://` → 裸 `http(s)://` 地址。
+ * 顺序：同步配置深链 → 配对码深链 → 开户码（`vkey://enroll` 深链 → `/join?c=` 链接 → 裸码）
+ * → 裸配对码 → `otpauth://` → 裸 `http(s)://` 地址。
  * 开户码在裸配对码之前；`otpauth://` 在裸地址判定之前（`otpauth:` 不是 http(s) scheme，
  * 顺序只是短路优化，不影响结论）。
  *
@@ -465,7 +471,7 @@ internal fun classifyScan(raw: String): ScanContent? {
     when (val link = Links.classify(raw)) {
         is ScanLink.ServerConfig -> return ScanContent.ServerAddress(link.serverUrl)
         is ScanLink.PairCode -> return ScanContent.PairCode(link.code)
-        is ScanLink.EnrollCode -> return ScanContent.EnrollCode(link.code)
+        is ScanLink.EnrollCode -> return ScanContent.EnrollCode(link.code, link.serverUrl, link.username)
         null -> Unit
     }
     Otpauth.parse(raw)?.let { return ScanContent.Totp(it) }
@@ -577,7 +583,7 @@ private fun dispatchRaw(
     onResult: ((TotpItem) -> Unit)?,
     onConfigLink: ((String) -> Unit)?,
     onPairCode: ((String) -> Unit)?,
-    onEnrollCode: ((String) -> Unit)?,
+    onEnrollCode: ((EnrollTarget) -> Unit)?,
     onError: (String) -> Unit,
 ): Boolean {
     when (val outcome = dispatchScan(raw, mode)) {
@@ -610,7 +616,7 @@ private fun dispatchRaw(
                     onError(context.getString(R.string.scan_err_enroll_code_wrong_page))
                     return false
                 }
-                callback(content.code)
+                callback(EnrollTarget(content.code, content.serverUrl, content.username))
                 return true
             }
             is ScanContent.Totp -> {

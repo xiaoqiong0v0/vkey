@@ -375,8 +375,14 @@ fun SyncScreen(
                     showScan = false
                     info = context.getString(R.string.info_pair_code_detected)
                 },
-                onEnrollCode = { code ->
-                    enrollCodeInput = code
+                onEnrollCode = { target ->
+                    enrollCodeInput = target.code
+                    // 深链 / `/join` 链接自带服务端地址时一并填好并持久化（裸码则保持现有地址）
+                    target.serverUrl?.let { server ->
+                        url = server
+                        onServerUrlChange(server)
+                    }
+                    target.username?.let { enrollUsernameInput = it }
                     showScan = false
                     info = context.getString(R.string.info_enroll_code_detected)
                 },

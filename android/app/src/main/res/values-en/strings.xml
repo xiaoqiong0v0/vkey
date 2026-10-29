@@ -28,6 +28,7 @@
     <!-- ============ Deep links ============ -->
     <string name="toast_server_set">Server address set: %1$s</string>
     <string name="toast_pair_code_detected">Pairing code detected. Claim it under Sync settings</string>
+    <string name="toast_enroll_already_logged_in">Already signed in as %1$s; no enrollment needed. To switch accounts, unbind this device in Settings first</string>
     <string name="err_deep_link_invalid">Link is invalid or expired</string>
 
     <!-- ============ Home ============ -->

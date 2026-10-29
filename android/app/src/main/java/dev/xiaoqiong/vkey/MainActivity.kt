@@ -254,7 +254,8 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
      *
      * - 配置深链：只写服务器地址，并打开「同步配置」页让用户输入配对码 / master_key；
      * - 配对深链：预填配对码（免鉴权领取，无需先登录）；
-     * - 开户深链：交给 [VaultScreen] 消费（已配置时先二次确认，确认后才覆盖地址并预填开户卡）；
+     * - 开户深链：已登录（`vault.device != null`）时**完全不响应**（不跳转、不改地址、不弹窗），
+     *   只提示「当前已登录 X，无需开户」；未登录时交给 [VaultScreen] 消费（覆盖地址并预填开户卡）；
      *   server/code 缺失或格式不符只提示「链接无效或已过期」，绝不改动现有配置。
      *
      * @param intent 启动或复用的 Intent（非 VIEW 或没有 data 时直接返回）
@@ -283,6 +284,17 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
         }
 
         if (data.trim().startsWith(Links.ENROLL_PREFIX, ignoreCase = true)) {
+            // 已登录：开户码没有意义（同一设备只能绑一个账号），整条深链不响应，
+            // 不跳转、不改服务端地址、不弹确认，只提示当前账号
+            val device = vault.value?.device
+            if (device != null) {
+                Toast.makeText(
+                    this,
+                    getString(R.string.toast_enroll_already_logged_in, device.username),
+                    Toast.LENGTH_LONG,
+                ).show()
+                return
+            }
             val link = Links.parseEnrollLink(data)
             if (link == null) {
                 // 非法/缺参：只提示，不落任何状态、不动服务器地址
@@ -534,8 +546,6 @@ private fun VaultScreen(
     var syncPrefill by remember { mutableStateOf("") }
     // 深链带来的开户请求：进「设置」页时展开开户卡并预填 code/username；离开本页即清除
     var enrollPrefill by remember { mutableStateOf<EnrollDeepLink?>(null) }
-    // 已配置时收到开户深链：先弹二次确认（复用 enroll 覆盖确认文案），确认后才应用
-    var enrollOverwriteConfirm by remember { mutableStateOf<EnrollDeepLink?>(null) }
     // 主页：连按两次返回才退出（第一次给出提示）
     val activity = LocalContext.current as? android.app.Activity
     var lastBackAt by remember { mutableLongStateOf(0L) }
@@ -684,14 +694,11 @@ private fun VaultScreen(
         topPage = VkeyPage.SYNC
     }
 
-    // 开户深链：未配置直接应用；已配置（device != null）先二次确认，取消则什么都不改
+    // 开户深链：已登录的请求在 Activity 层就被拦下（只提示，不进入这里），
+    // 因此到此只会是未登录场景，直接应用
     LaunchedEffect(pendingEnroll) {
         val link = pendingEnroll ?: return@LaunchedEffect
-        if (latestVault.device != null) {
-            enrollOverwriteConfirm = link
-        } else {
-            applyEnrollLink(link)
-        }
+        applyEnrollLink(link)
         onPendingHandled()
     }
 
@@ -969,28 +976,6 @@ private fun VaultScreen(
             },
             dismissButton = {
                 TextButton(onClick = { pendingRevoke = null }) {
-                    Text(stringResource(R.string.action_cancel))
-                }
-            },
-        )
-    }
-
-    // 开户深链 × 已配置：与 enroll 卡「接入新账号」同一套二次确认语义。
-    // 确认 = 清本地设备材料（否则开户卡不可见）、覆盖地址并预填开户卡；取消 = 一切不动。
-    enrollOverwriteConfirm?.let { link ->
-        AlertDialog(
-            onDismissRequest = { enrollOverwriteConfirm = null },
-            title = { Text(stringResource(R.string.dialog_enroll_overwrite_title)) },
-            text = { Text(stringResource(R.string.dialog_enroll_overwrite_text)) },
-            confirmButton = {
-                TextButton(onClick = {
-                    enrollOverwriteConfirm = null
-                    onPersist(latestVault.copy(device = null))
-                    applyEnrollLink(link)
-                }) { Text(stringResource(R.string.action_enroll)) }
-            },
-            dismissButton = {
-                TextButton(onClick = { enrollOverwriteConfirm = null }) {
                     Text(stringResource(R.string.action_cancel))
                 }
             },

@@ -32,6 +32,12 @@ class ScanDispatchTest {
     /** 开户码。 */
     private val enroll = "ENROLL-AB12-CD34"
 
+    /** 开户深链（服务端 `/join` 落地页按钮生成）。 */
+    private val enrollLink = "vkey://enroll?server=https://example.com&code=$enroll&username=dl1"
+
+    /** 服务端 `/join` 落地页链接（`qr-join.png` 同内容，换成 http 形式）。 */
+    private val joinUrl = "http://10.0.2.2:3150/join?c=$enroll"
+
     /** otpauth:// 二维码。 */
     private val otpauth = "otpauth://totp/GitHub:alice@example.com?secret=JBSWY3DPEHPK3PXP&issuer=GitHub"
 
@@ -65,7 +71,7 @@ class ScanDispatchTest {
         for (server in listOf(plainServer, configLink)) {
             assertAccepted(server, ScanMode.CONFIG_LINK, ScanKind.SERVER_ADDRESS)
         }
-        for (other in listOf(barePair, pairLink, enroll, otpauth, garbage)) {
+        for (other in listOf(barePair, pairLink, enroll, enrollLink, joinUrl, otpauth, garbage)) {
             assertRejected(other, ScanMode.CONFIG_LINK, ScanReject.NOT_SERVER_ADDRESS)
         }
     }
@@ -94,6 +100,26 @@ class ScanDispatchTest {
         assertEquals(enroll, (outcome.content as ScanContent.EnrollCode).code)
     }
 
+    @Test
+    fun `ENROLL 接受开户深链并带出地址与用户名`() {
+        assertAccepted(enrollLink, ScanMode.ENROLL, ScanKind.ENROLL_CODE)
+        val outcome = dispatchScan(enrollLink, ScanMode.ENROLL) as ScanOutcome.Accepted
+        val content = outcome.content as ScanContent.EnrollCode
+        assertEquals(enroll, content.code)
+        assertEquals("https://example.com", content.serverUrl)
+        assertEquals("dl1", content.username)
+    }
+
+    @Test
+    fun `ENROLL 接受 join 落地页链接并带出地址`() {
+        assertAccepted(joinUrl, ScanMode.ENROLL, ScanKind.ENROLL_CODE)
+        val outcome = dispatchScan(joinUrl, ScanMode.ENROLL) as ScanOutcome.Accepted
+        val content = outcome.content as ScanContent.EnrollCode
+        assertEquals(enroll, content.code)
+        assertEquals("http://10.0.2.2:3150", content.serverUrl)
+        assertEquals(null, content.username)
+    }
+
     // ---------------- PAIR ----------------
 
     @Test
@@ -104,7 +130,7 @@ class ScanDispatchTest {
         for (server in listOf(plainServer, configLink)) {
             assertAccepted(server, ScanMode.PAIR, ScanKind.SERVER_ADDRESS)
         }
-        for (other in listOf(enroll, otpauth, garbage)) {
+        for (other in listOf(enroll, enrollLink, joinUrl, otpauth, garbage)) {
             assertRejected(other, ScanMode.PAIR, ScanReject.NOT_PAIR_CODE)
         }
     }
@@ -122,7 +148,7 @@ class ScanDispatchTest {
     @Test
     fun `TOTP 只接受 otpauth`() {
         assertAccepted(otpauth, ScanMode.TOTP, ScanKind.TOTP)
-        for (other in listOf(plainServer, configLink, barePair, pairLink, enroll, garbage)) {
+        for (other in listOf(plainServer, configLink, barePair, pairLink, enroll, enrollLink, joinUrl, garbage)) {
             assertRejected(other, ScanMode.TOTP, ScanReject.NOT_TOTP)
         }
     }
@@ -136,6 +162,8 @@ class ScanDispatchTest {
         assertAccepted(barePair, ScanMode.AUTO, ScanKind.PAIR_CODE)
         assertAccepted(pairLink, ScanMode.AUTO, ScanKind.PAIR_CODE)
         assertAccepted(enroll, ScanMode.AUTO, ScanKind.ENROLL_CODE)
+        assertAccepted(enrollLink, ScanMode.AUTO, ScanKind.ENROLL_CODE)
+        assertAccepted(joinUrl, ScanMode.AUTO, ScanKind.ENROLL_CODE)
         assertAccepted(otpauth, ScanMode.AUTO, ScanKind.TOTP)
     }
 
@@ -162,9 +190,19 @@ class ScanDispatchTest {
         assertEquals(ScanKind.SERVER_ADDRESS, classifyScan(plainServer)?.kind)
         assertEquals(ScanKind.PAIR_CODE, classifyScan(pairLink)?.kind)
         assertEquals(ScanKind.ENROLL_CODE, classifyScan(enroll)?.kind)
+        assertEquals(ScanKind.ENROLL_CODE, classifyScan(enrollLink)?.kind)
+        assertEquals(ScanKind.ENROLL_CODE, classifyScan(joinUrl)?.kind)
         assertEquals(ScanKind.TOTP, classifyScan(otpauth)?.kind)
         assertEquals(null, classifyScan(garbage))
         // 地址码在 ENROLL 模式下：识别成功但类别不符 → 报「这不是开户码」，绝不回调
         assertRejected(plainServer, ScanMode.ENROLL, ScanReject.NOT_ENROLL_CODE)
+    }
+
+    @Test
+    fun `CONFIG_LINK 拒绝开户深链与 join 链接`() {
+        // 这两个虽是 http(s) 形态的链接，但语义是开户码，绝不当作纯地址配置
+        for (raw in listOf(enrollLink, joinUrl)) {
+            assertRejected(raw, ScanMode.CONFIG_LINK, ScanReject.NOT_SERVER_ADDRESS)
+        }
     }
 }

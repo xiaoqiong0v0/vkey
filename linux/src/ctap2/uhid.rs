@@ -238,9 +238,12 @@ pub fn event_type(event: &[u8]) -> u32 {
 /// 运行 uhid daemon（前台，直到 Ctrl-C / SIGTERM）。
 pub fn run_daemon<B: CredentialBackend>(authenticator: Authenticator<B>) -> Result<()> {
     // 安装退出信号：read 被 EINTR 打断后检查 STOP_REQUESTED。
+    // 先落到显式函数指针再转 sighandler_t，避免 clippy 的
+    // `direct cast of function item into an integer`（fn item 不能直接转整数）。
+    let handler: extern "C" fn(libc::c_int) = on_signal;
     unsafe {
-        libc::signal(libc::SIGINT, on_signal as libc::sighandler_t);
-        libc::signal(libc::SIGTERM, on_signal as libc::sighandler_t);
+        libc::signal(libc::SIGINT, handler as libc::sighandler_t);
+        libc::signal(libc::SIGTERM, handler as libc::sighandler_t);
     }
 
     let device = Arc::new(UhidDevice::open()?);

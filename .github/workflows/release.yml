@@ -47,6 +47,8 @@ jobs:
           distribution: temurin
           java-version: "17"
       - uses: android-actions/setup-android@v3
+        with:
+          packages: "platform-tools platforms;android-35 build-tools;35.0.0"
 
       # 签名材料从仓库 Secrets 还原；缺失时产出未签名包（仅用于自测）
       - name: restore keystore

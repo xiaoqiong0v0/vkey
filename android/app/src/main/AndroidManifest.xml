@@ -46,6 +46,14 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="vkey" android:host="pair" />
             </intent-filter>
+
+            <!-- 开户深链：vkey://enroll?server=…&code=…（服务端 /join 落地页按钮与二维码） -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="vkey" android:host="enroll" />
+            </intent-filter>
         </activity>
     </application>
 

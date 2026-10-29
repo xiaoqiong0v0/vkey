@@ -29,6 +29,7 @@
     <!-- ============ 深链提示 ============ -->
     <string name="toast_server_set">服务器地址已设置：%1$s</string>
     <string name="toast_pair_code_detected">已识别配对码，请在「同步配置」里领取</string>
+    <string name="err_deep_link_invalid">链接无效或已过期</string>
 
     <!-- ============ 主页 ============ -->
     <string name="home_title">vkey · 2FA %1$d · 密钥 %2$d</string>
@@ -90,6 +91,10 @@
     <string name="language_chinese">中文</string>
     <string name="language_english">English</string>
 
+    <!-- ============ 设置：本机设备名（全局唯一输入入口） ============ -->
+    <string name="section_device_name">本机设备名</string>
+    <string name="device_name_desc">仅用于在服务端标识本设备，可随时修改；下次登录 / 配对时生效。已配对的设备重命名，请在该设备的设置里操作。</string>
+
     <!-- ============ 平台地址 / 通用动作 ============ -->
     <string name="action_back">返回</string>
     <string name="action_scan">扫码</string>
@@ -133,7 +138,6 @@
     <string name="action_scan_other_code">扫别人的码</string>
     <string name="section_device_management">设备管理</string>
     <string name="warn_server_changed">填写的地址与当前配对不一致：更换服务器后需要重新配对。</string>
-    <string name="label_device_name_for_repair">设备名（重新配对时使用）</string>
     <string name="action_clear_pairing">解除账户绑定（保留本地数据）</string>
     <string name="section_login_master_key">用 master_key 登录</string>
     <string name="login_master_key_desc">恢复码 / master_key（52 位）。本机会生成并保存自己的设备密钥。</string>

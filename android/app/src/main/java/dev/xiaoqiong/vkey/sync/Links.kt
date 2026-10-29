@@ -22,6 +22,15 @@ sealed interface ScanLink {
 }
 
 /**
+ * 开户深链 `vkey://enroll?server=…&code=…[&username=…]` 的解析结果。
+ *
+ * @property serverUrl 已校验为 `http(s)://` 的服务器地址
+ * @property code 规范化后的开户码（`ENROLL-XXXX-XXXX`）
+ * @property username 链接附带的用户名；缺省或空白时为 null
+ */
+data class EnrollDeepLink(val serverUrl: String, val code: String, val username: String?)
+
+/**
  * 深链与配对码文本解析（纯 JVM，便于单元测试）。
  *
  * 服务端生成的深链形如 `vkey://config?server=https://example.com`，
@@ -36,6 +45,9 @@ object Links {
     /** 配对码深链前缀。 */
     const val PAIR_PREFIX: String = "vkey://pair"
 
+    /** 开户深链前缀（与服务端 `join.go` 的 `deepLinkEnrollPrefix` 一致）。 */
+    const val ENROLL_PREFIX: String = "vkey://enroll"
+
     /** 配对码 / master_key 均为 32B，base32 无填充后固定 52 字符。 */
     private const val KEY_BYTES = 32
     private const val KEY_CHARS = 52
@@ -48,6 +60,7 @@ object Links {
 
     private const val PARAM_SERVER = "server"
     private const val PARAM_CODE = "code"
+    private const val PARAM_USERNAME = "username"
 
     /**
      * 解析同步配置深链里的服务器地址。
@@ -61,12 +74,35 @@ object Links {
         val rest = text.substring(CONFIG_PREFIX.length)
         // 允许 `vkey://config?…`、`vkey://config/?…` 与无参数形式
         if (rest.isNotEmpty() && rest[0] != '?' && rest[0] != '/' && rest[0] != '#') return null
+        return serverFromQuery(rest.substringAfter('?', ""))
+    }
+
+    /**
+     * 解析开户深链 `vkey://enroll?server=…&code=…[&username=…]`（服务端 `/join` 落地页按钮）。
+     *
+     * server 与 code 缺一不可；code 复用 [parseEnrollCode] 规范化（大小写/空格容忍），
+     * 格式不符整体判为无效（返回 null，由调用方提示「链接无效或已过期」）。
+     *
+     * @param raw intent data 原文
+     * @return 解析结果；不是开户深链、地址非法或码非法时返回 null
+     */
+    fun parseEnrollLink(raw: String): EnrollDeepLink? {
+        val text = raw.trim()
+        if (!text.startsWith(ENROLL_PREFIX, ignoreCase = true)) return null
+        val rest = text.substring(ENROLL_PREFIX.length)
+        // 允许 `vkey://enroll?…`、`vkey://enroll/?…` 与无参数形式
+        if (rest.isNotEmpty() && rest[0] != '?' && rest[0] != '/' && rest[0] != '#') return null
         val query = rest.substringAfter('?', "")
-        val server = queryParam(query, PARAM_SERVER)?.let(::decodeQueryValue)?.trim()
-        if (server.isNullOrEmpty()) return null
-        val lower = server.lowercase()
-        if (!lower.startsWith("http://") && !lower.startsWith("https://")) return null
-        return server
+        val server = serverFromQuery(query) ?: return null
+        val code = queryParam(query, PARAM_CODE)
+            ?.let(::decodeQueryValue)
+            ?.let(::parseEnrollCode)
+            ?: return null
+        val username = queryParam(query, PARAM_USERNAME)
+            ?.let(::decodeQueryValue)
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+        return EnrollDeepLink(server, code, username)
     }
 
     /**
@@ -131,6 +167,20 @@ object Links {
     // ------------------------------------------------------------------
     // 私有实现
     // ------------------------------------------------------------------
+
+    /**
+     * 从查询串取 `server` 参数并校验 scheme。
+     *
+     * 规则与 `SyncScreen.isValidServerUrl` 一致：仅接受 `http://` / `https://` 前缀
+     * （大小写不限）；sync 包不依赖 ui 包，故此处内联同一判定而非复用该函数。
+     */
+    private fun serverFromQuery(query: String): String? {
+        val server = queryParam(query, PARAM_SERVER)?.let(::decodeQueryValue)?.trim()
+        if (server.isNullOrEmpty()) return null
+        val lower = server.lowercase()
+        if (!lower.startsWith("http://") && !lower.startsWith("https://")) return null
+        return server
+    }
 
     /** 判断文本是否恰好是 32B 的 base32（容忍分组符/空白/填充/小写）。 */
     private fun isPairCodeText(text: String): Boolean {

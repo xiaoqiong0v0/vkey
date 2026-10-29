@@ -190,4 +190,95 @@ class LinksTest {
         assertEquals(ScanLink.PairCode(key), Links.classify(key))
         assertTrue(Links.classify("vkey://config?server=https://x") is ScanLink.ServerConfig)
     }
+
+    // ------------------------------------------------------------------
+    // 开户深链 vkey://enroll?server=…&code=…[&username=…]
+    // ------------------------------------------------------------------
+
+    @Test
+    fun `parseEnrollLink 正常解析 server 与 code`() {
+        assertEquals(
+            EnrollDeepLink("http://10.0.2.2:3150", "ENROLL-ABCD-1234", null),
+            Links.parseEnrollLink("vkey://enroll?server=http://10.0.2.2:3150&code=ENROLL-ABCD-1234"),
+        )
+    }
+
+    @Test
+    fun `parseEnrollLink 解析 username`() {
+        assertEquals(
+            EnrollDeepLink("https://vkey.example.com", "ENROLL-ABCD-1234", "dl1"),
+            Links.parseEnrollLink(
+                "vkey://enroll?server=https://vkey.example.com&code=ENROLL-ABCD-1234&username=dl1",
+            ),
+        )
+    }
+
+    @Test
+    fun `parseEnrollLink 参数顺序无关且忽略其它参数`() {
+        assertEquals(
+            EnrollDeepLink("https://a.b", "ENROLL-AB12-CD34", "u2"),
+            Links.parseEnrollLink("vkey://enroll?from=join&username=u2&code=ENROLL-AB12-CD34&server=https://a.b"),
+        )
+    }
+
+    @Test
+    fun `parseEnrollLink 缺 code 或缺 server 返回 null`() {
+        assertNull(Links.parseEnrollLink("vkey://enroll?server=https://a.b"))
+        assertNull(Links.parseEnrollLink("vkey://enroll?code=ENROLL-AB12-CD34"))
+        assertNull(Links.parseEnrollLink("vkey://enroll"))
+        assertNull(Links.parseEnrollLink("vkey://enroll?server=&code=ENROLL-AB12-CD34"))
+        assertNull(Links.parseEnrollLink("vkey://enroll?server=https://a.b&code="))
+    }
+
+    @Test
+    fun `parseEnrollLink 非法 code 返回 null`() {
+        assertNull(Links.parseEnrollLink("vkey://enroll?server=https://a.b&code=BAD"))
+        assertNull(Links.parseEnrollLink("vkey://enroll?server=https://a.b&code=ENROLL-AB1-CD34"))
+        // 裸配对码不是开户码
+        assertNull(
+            Links.parseEnrollLink(
+                "vkey://enroll?server=https://a.b&code=" + Base32.encode(ByteArray(32)),
+            ),
+        )
+    }
+
+    @Test
+    fun `parseEnrollLink 非 http(s) 协议返回 null`() {
+        assertNull(Links.parseEnrollLink("vkey://enroll?server=ftp://a.b&code=ENROLL-AB12-CD34"))
+        assertNull(Links.parseEnrollLink("vkey://enroll?server=a.b&code=ENROLL-AB12-CD34"))
+    }
+
+    @Test
+    fun `parseEnrollLink 大小写与空格容忍`() {
+        // 前缀大小写不限、码规范化同 parseEnrollCode（转大写、去内部空格）
+        assertEquals(
+            EnrollDeepLink("https://a.b", "ENROLL-AB12-CD34", null),
+            Links.parseEnrollLink("  VKEY://ENROLL?server=https://a.b&code=enroll-ab12-cd34 "),
+        )
+    }
+
+    @Test
+    fun `parseEnrollLink 容忍 percent-encoded 值`() {
+        assertEquals(
+            EnrollDeepLink("https://a.b", "ENROLL-AB12-CD34", "u 1"),
+            Links.parseEnrollLink(
+                "vkey://enroll?server=https%3A%2F%2Fa.b&code=ENROLL-AB12-CD34&username=u%201",
+            ),
+        )
+    }
+
+    @Test
+    fun `parseEnrollLink 空白 username 归一为 null`() {
+        assertEquals(
+            EnrollDeepLink("https://a.b", "ENROLL-AB12-CD34", null),
+            Links.parseEnrollLink("vkey://enroll?server=https://a.b&code=ENROLL-AB12-CD34&username=%20"),
+        )
+    }
+
+    @Test
+    fun `parseEnrollLink 拒绝前缀相似的主机与其它深链`() {
+        assertNull(Links.parseEnrollLink("vkey://enrollment?server=https://a.b&code=ENROLL-AB12-CD34"))
+        assertNull(Links.parseEnrollLink("vkey://config?server=https://a.b"))
+        assertNull(Links.parseEnrollLink("otpauth://totp/a?secret=JBSWY3DPEHPK3PXP"))
+    }
 }

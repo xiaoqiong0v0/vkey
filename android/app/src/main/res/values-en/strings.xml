@@ -28,6 +28,7 @@
     <!-- ============ Deep links ============ -->
     <string name="toast_server_set">Server address set: %1$s</string>
     <string name="toast_pair_code_detected">Pairing code detected. Claim it under Sync settings</string>
+    <string name="err_deep_link_invalid">Link is invalid or expired</string>
 
     <!-- ============ Home ============ -->
     <string name="home_title">vkey · 2FA %1$d · Keys %2$d</string>
@@ -89,6 +90,10 @@
     <string name="language_chinese">Chinese</string>
     <string name="language_english">English</string>
 
+    <!-- ============ Settings: this device's name (single input entry) ============ -->
+    <string name="section_device_name">This device\'s name</string>
+    <string name="device_name_desc">Identifies this device on the server. You can change it anytime; it applies on the next login / pairing. To rename an already-paired device, use that device\'s own settings.</string>
+
     <!-- ============ Common actions ============ -->
     <string name="action_back">Back</string>
     <string name="action_scan">Scan</string>
@@ -132,7 +137,6 @@
     <string name="action_scan_other_code">Scan a code</string>
     <string name="section_device_management">Device management</string>
     <string name="warn_server_changed">The address differs from the current pairing: switching servers requires pairing again.</string>
-    <string name="label_device_name_for_repair">Device name (used when pairing again)</string>
     <string name="action_clear_pairing">Unlink account (keep local data)</string>
     <string name="section_login_master_key">Sign in with master_key</string>
     <string name="login_master_key_desc">Recovery code / master_key (52 characters). This device generates and stores its own device key.</string>

@@ -69,6 +69,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.xiaoqiong.vkey.i18n.LocaleSupport
+import dev.xiaoqiong.vkey.sync.EnrollDeepLink
 import dev.xiaoqiong.vkey.sync.ItemJson
 import dev.xiaoqiong.vkey.sync.ItemsSync
 import dev.xiaoqiong.vkey.sync.Links
@@ -145,6 +146,9 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
 
     /** 深链带来的配对码（预填到同步配置页）。 */
     private val pendingPairCode = mutableStateOf<String?>(null)
+
+    /** 深链带来的开户请求（`vkey://enroll?server=…&code=…`）；null 表示无。 */
+    private val pendingEnroll = mutableStateOf<EnrollDeepLink?>(null)
 
     /** 系统验证进行中，避免重复拉起。 */
     private var authInFlight = false
@@ -228,9 +232,11 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                     },
                     pendingSyncServer = pendingSyncServer.value,
                     pendingPairCode = pendingPairCode.value,
+                    pendingEnroll = pendingEnroll.value,
                     onPendingHandled = {
                         pendingSyncServer.value = null
                         pendingPairCode.value = null
+                        pendingEnroll.value = null
                     },
                 )
             }
@@ -244,10 +250,12 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
     }
 
     /**
-     * 处理 `vkey://config?server=…` 与 `vkey://pair?code=…` 深链。
+     * 处理 `vkey://config?server=…`、`vkey://pair?code=…` 与 `vkey://enroll?server=…&code=…` 深链。
      *
      * - 配置深链：只写服务器地址，并打开「同步配置」页让用户输入配对码 / master_key；
-     * - 配对深链：预填配对码（免鉴权领取，无需先登录）。
+     * - 配对深链：预填配对码（免鉴权领取，无需先登录）；
+     * - 开户深链：交给 [VaultScreen] 消费（已配置时先二次确认，确认后才覆盖地址并预填开户卡）；
+     *   server/code 缺失或格式不符只提示「链接无效或已过期」，绝不改动现有配置。
      *
      * @param intent 启动或复用的 Intent（非 VIEW 或没有 data 时直接返回）
      */
@@ -259,6 +267,7 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
         if (server != null) {
             settings.serverUrl = server
             pendingPairCode.value = null
+            pendingEnroll.value = null
             pendingSyncServer.value = server
             Toast.makeText(this, getString(R.string.toast_server_set, server), Toast.LENGTH_LONG).show()
             return
@@ -267,8 +276,22 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
         val code = Links.parsePairCodeLink(data)
         if (code != null) {
             pendingPairCode.value = code
+            pendingEnroll.value = null
             pendingSyncServer.value = settings.serverUrl
             Toast.makeText(this, getString(R.string.toast_pair_code_detected), Toast.LENGTH_LONG).show()
+            return
+        }
+
+        if (data.trim().startsWith(Links.ENROLL_PREFIX, ignoreCase = true)) {
+            val link = Links.parseEnrollLink(data)
+            if (link == null) {
+                // 非法/缺参：只提示，不落任何状态、不动服务器地址
+                Toast.makeText(this, getString(R.string.err_deep_link_invalid), Toast.LENGTH_LONG).show()
+            } else {
+                pendingPairCode.value = null
+                pendingSyncServer.value = null
+                pendingEnroll.value = link
+            }
         }
     }
 
@@ -370,6 +393,7 @@ private fun VkeyApp(
     onLanguageChange: (LanguageMode) -> Unit,
     pendingSyncServer: String?,
     pendingPairCode: String?,
+    pendingEnroll: EnrollDeepLink?,
     onPendingHandled: () -> Unit,
 ) {
     when {
@@ -390,6 +414,7 @@ private fun VkeyApp(
             onLanguageChange = onLanguageChange,
             pendingSyncServer = pendingSyncServer,
             pendingPairCode = pendingPairCode,
+            pendingEnroll = pendingEnroll,
             onPendingHandled = onPendingHandled,
         )
     }
@@ -491,6 +516,7 @@ private fun VaultScreen(
     onLanguageChange: (LanguageMode) -> Unit,
     pendingSyncServer: String?,
     pendingPairCode: String?,
+    pendingEnroll: EnrollDeepLink?,
     onPendingHandled: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -506,6 +532,10 @@ private fun VaultScreen(
     val pagerState = rememberPagerState(pageCount = { PAGE_COUNT })
     // 深链带来的配对码：先固定下来再清除 pending，避免 SyncScreen 首帧读到 null
     var syncPrefill by remember { mutableStateOf("") }
+    // 深链带来的开户请求：进「设置」页时展开开户卡并预填 code/username；离开本页即清除
+    var enrollPrefill by remember { mutableStateOf<EnrollDeepLink?>(null) }
+    // 已配置时收到开户深链：先弹二次确认（复用 enroll 覆盖确认文案），确认后才应用
+    var enrollOverwriteConfirm by remember { mutableStateOf<EnrollDeepLink?>(null) }
     // 主页：连按两次返回才退出（第一次给出提示）
     val activity = LocalContext.current as? android.app.Activity
     var lastBackAt by remember { mutableLongStateOf(0L) }
@@ -641,6 +671,30 @@ private fun VaultScreen(
         }
     }
 
+    /**
+     * 应用一条开户深链：覆盖服务器地址 → 预填开户卡 → 打开「设置」页。
+     *
+     * serverUrl 经 [onServerUrlChange] 落 AppSettings；同时把地址留在
+     * [enrollPrefill] 里，SyncScreen 首帧组合时直接取它，避免读到未重组的旧值。
+     */
+    val applyEnrollLink: (EnrollDeepLink) -> Unit = { link ->
+        onServerUrlChange(link.serverUrl)
+        enrollPrefill = link
+        syncPrefill = ""
+        topPage = VkeyPage.SYNC
+    }
+
+    // 开户深链：未配置直接应用；已配置（device != null）先二次确认，取消则什么都不改
+    LaunchedEffect(pendingEnroll) {
+        val link = pendingEnroll ?: return@LaunchedEffect
+        if (latestVault.device != null) {
+            enrollOverwriteConfirm = link
+        } else {
+            applyEnrollLink(link)
+        }
+        onPendingHandled()
+    }
+
     // 0 = 收起，1 = 完全展开；驱动按钮的位移与透明度
     val expandProgress by animateFloatAsState(
         targetValue = if (fabExpanded) 1f else 0f,
@@ -690,7 +744,7 @@ private fun VaultScreen(
                                 )
                             },
                             actions = {
-                                TextButton(onClick = { syncPrefill = ""; topPage = VkeyPage.SYNC }) { Text(stringResource(R.string.action_settings)) }
+                                TextButton(onClick = { syncPrefill = ""; enrollPrefill = null; topPage = VkeyPage.SYNC }) { Text(stringResource(R.string.action_settings)) }
                                 TextButton(onClick = onLock) { Text(stringResource(R.string.action_lock)) }
                             },
                         )
@@ -810,10 +864,13 @@ private fun VaultScreen(
                 masterKey = vault.master_key,
                 device = vault.device,
                 hasLocalItems = vault.items.any { !it.deleted },
-                serverUrl = serverUrl,
+                // 开户深链带来的地址优先：settings 的写入未必在本次组合里可见
+                serverUrl = enrollPrefill?.serverUrl ?: serverUrl,
                 lastSyncAt = vault.lastSyncAt,
                 onSyncNow = doSync,
                 initialPairCode = syncPrefill.takeIf { it.isNotBlank() },
+                initialEnrollCode = enrollPrefill?.code,
+                initialEnrollUsername = enrollPrefill?.username,
                 onSaved = { config, newMasterKey ->
                     // 配对/开户拿到的 master_key 才是账号密钥：以它为准（本地条目保留）。
                     // 走 latestVault 而非闭包捕获的 vault，避免陈旧快照覆盖并发写入；
@@ -835,7 +892,7 @@ private fun VaultScreen(
                 onLanguageChange = onLanguageChange,
                 onClearDevice = { onPersist(vault.copy(device = null)) },
                 onOpenAbout = { topPage = VkeyPage.ABOUT },
-                onClose = { topPage = VkeyPage.HOME },
+                onClose = { enrollPrefill = null; topPage = VkeyPage.HOME },
             )
 
             VkeyPage.ABOUT -> dev.xiaoqiong.vkey.ui.AboutScreen(
@@ -912,6 +969,28 @@ private fun VaultScreen(
             },
             dismissButton = {
                 TextButton(onClick = { pendingRevoke = null }) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            },
+        )
+    }
+
+    // 开户深链 × 已配置：与 enroll 卡「接入新账号」同一套二次确认语义。
+    // 确认 = 清本地设备材料（否则开户卡不可见）、覆盖地址并预填开户卡；取消 = 一切不动。
+    enrollOverwriteConfirm?.let { link ->
+        AlertDialog(
+            onDismissRequest = { enrollOverwriteConfirm = null },
+            title = { Text(stringResource(R.string.dialog_enroll_overwrite_title)) },
+            text = { Text(stringResource(R.string.dialog_enroll_overwrite_text)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    enrollOverwriteConfirm = null
+                    onPersist(latestVault.copy(device = null))
+                    applyEnrollLink(link)
+                }) { Text(stringResource(R.string.action_enroll)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { enrollOverwriteConfirm = null }) {
                     Text(stringResource(R.string.action_cancel))
                 }
             },

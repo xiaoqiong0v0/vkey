@@ -102,7 +102,9 @@ private enum class ConfirmKind { NONE, CLEAR_DEVICE, ENROLL }
  * 入口：
  * - 设置 → 同步配置；
  * - `vkey://config?server=…` 深链 / 扫码（自动填地址）；
- * - `vkey://pair?code=…` 深链 / 扫码（自动填配对码）。
+ * - `vkey://pair?code=…` 深链 / 扫码（自动填配对码）；
+ * - `vkey://enroll?server=…&code=…[&username=…]` 深链（服务端 `/join` 页）：
+ *   自动展开「用开户码接入」卡片并预填 code/username（地址由上层先行覆盖）。
  *
  * 所有网络与密码学操作都在 IO 线程执行，结果通过 [onSaved] 落盘。
  *
@@ -116,6 +118,9 @@ private enum class ConfirmKind { NONE, CLEAR_DEVICE, ENROLL }
  * @param lastSyncAt 最近一次同步完成时间（unix 秒）；0 = 从未同步
  * @param onSyncNow 执行一次条目同步（由上层持库状态，内部切 IO 并落盘）；返回统计
  * @param initialPairCode 从扫码/深链带进来的配对码（可为 null）
+ * @param initialEnrollCode 开户深链（`vkey://enroll`）带进来的规范化开户码（可为 null）；
+ *   非 null 时「用开户码接入」卡片默认展开并预填
+ * @param initialEnrollUsername 开户深链附带的用户名（可为 null）
  * @param onSaved 配置成功回调：新设备材料 + 需要替换的 master_key（null 表示与本地一致）；
  *   **同步落盘并读回校验**，返回 null = 已持久化，非 null = 错误文案（未落盘，可重试）
  * @param onServerUrlChange 服务器地址变化（持久化到 AppSettings）
@@ -133,6 +138,8 @@ fun SyncScreen(
     lastSyncAt: Long,
     onSyncNow: suspend () -> SyncStats,
     initialPairCode: String?,
+    initialEnrollCode: String?,
+    initialEnrollUsername: String?,
     onSaved: (DeviceConfig, String?) -> String?,
     onServerUrlChange: (String) -> Unit,
     onClearDevice: () -> Unit,
@@ -154,8 +161,9 @@ fun SyncScreen(
     var deviceName by remember { mutableStateOf(device?.device_name ?: defaultDeviceName()) }
     var masterKeyInput by remember { mutableStateOf("") }
     var pairCodeInput by remember { mutableStateOf(initialPairCode.orEmpty()) }
-    var enrollCodeInput by remember { mutableStateOf("") }
-    var enrollUsernameInput by remember { mutableStateOf("") }
+    // 开户深链（vkey://enroll）带来的预填值；无深链时为空、行为不变
+    var enrollCodeInput by remember { mutableStateOf(initialEnrollCode.orEmpty()) }
+    var enrollUsernameInput by remember { mutableStateOf(initialEnrollUsername.orEmpty()) }
     // 开户成功后的待发材料：非 null 时展示恢复码确认弹窗（勾选后才落盘）
     var enrollPending by remember { mutableStateOf<EnrollResult?>(null) }
     var enrollAck by remember { mutableStateOf(false) }
@@ -170,9 +178,10 @@ fun SyncScreen(
     var confirm by remember { mutableStateOf(ConfirmKind.NONE) }
     var syncStats by remember { mutableStateOf<SyncStats?>(null) }
     // 两张卡片的折叠状态：只存内存（离开本页即恢复默认），不做持久化。
-    // 默认收起；服务端从未配置（serverUrl 为空）时地址卡默认展开，否则新用户找不到入口。
+    // 默认收起；服务端从未配置（serverUrl 为空）时地址卡默认展开，否则新用户找不到入口；
+    // 开户深链带码进来时开户卡默认展开（用户点开就该看到已填好的码）。
     var serverCardExpanded by remember { mutableStateOf(serverUrl.isBlank()) }
-    var enrollCardExpanded by remember { mutableStateOf(false) }
+    var enrollCardExpanded by remember { mutableStateOf(initialEnrollCode != null) }
 
     /** 统一的任务执行：置忙、清错误、切 IO。 */
     val runTask: (String, suspend () -> Unit) -> Unit = { label, task ->
@@ -427,6 +436,31 @@ fun SyncScreen(
                         }
                     }
 
+                    // ---------------- 本机设备名（全局唯一输入入口） ----------------
+                    // 设备名只在这里编辑：登录 / 配对 / 开户各入口共用同一个 deviceName 状态。
+                    // 已配对时只改内存值，不写回服务端记录，仅在下次登录 / 配对时生效。
+                    Card(Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(16.dp)) {
+                            Text(
+                                stringResource(R.string.section_device_name),
+                                style = MaterialTheme.typography.titleMedium,
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            OutlinedTextField(
+                                value = deviceName,
+                                onValueChange = { deviceName = it },
+                                label = { Text(stringResource(R.string.label_device_name)) },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                            Text(
+                                stringResource(R.string.device_name_desc),
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier.padding(top = 4.dp),
+                            )
+                        }
+                    }
+
                     // ---------------- 安全 ----------------
                     Card(Modifier.fillMaxWidth()) {
                         Row(
@@ -603,14 +637,6 @@ fun SyncScreen(
                                     modifier = Modifier.fillMaxWidth(),
                                 )
                                 Spacer(Modifier.height(8.dp))
-                                OutlinedTextField(
-                                    value = deviceName,
-                                    onValueChange = { deviceName = it },
-                                    label = { Text(stringResource(R.string.label_device_name)) },
-                                    singleLine = true,
-                                    modifier = Modifier.fillMaxWidth(),
-                                )
-                                Spacer(Modifier.height(8.dp))
                                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                     Button(
                                         onClick = doEnroll,
@@ -765,15 +791,6 @@ fun SyncScreen(
                                         modifier = Modifier.padding(top = 4.dp),
                                     )
                                 }
-                                Spacer(Modifier.height(8.dp))
-                                OutlinedTextField(
-                                    value = deviceName,
-                                    onValueChange = { deviceName = it },
-                                    label = { Text(stringResource(R.string.label_device_name_for_repair)) },
-                                    singleLine = true,
-                                    modifier = Modifier.fillMaxWidth(),
-                                )
-                                Spacer(Modifier.height(8.dp))
                                 TextButton(
                                     onClick = { confirm = ConfirmKind.CLEAR_DEVICE },
                                     enabled = busy == null,
@@ -844,14 +861,6 @@ fun SyncScreen(
                                 }
                             }
                         }
-
-                        OutlinedTextField(
-                            value = deviceName,
-                            onValueChange = { deviceName = it },
-                            label = { Text(stringResource(R.string.label_device_name)) },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
                     }
 
                     // ---------------- 关于（页面最底部） ----------------

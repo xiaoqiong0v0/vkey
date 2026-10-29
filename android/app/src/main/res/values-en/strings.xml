@@ -110,6 +110,12 @@
     <string name="info_server_saved">Server address saved</string>
     <string name="action_save_address">Save address</string>
     <string name="sync_scan_hint">The scanner recognizes the server /pair page or home page QR code (it only contains the server address)</string>
+    <!-- Collapsible cards: title + collapsed-state summary + expand/collapse accessibility labels -->
+    <string name="section_server_address">Server address</string>
+    <string name="enroll_card_new_account">Connect a new account</string>
+    <string name="enroll_card_current">Current: %1$s</string>
+    <string name="state_expanded">Expanded</string>
+    <string name="state_collapsed">Collapsed</string>
     <string name="section_item_sync">Item sync</string>
     <string name="item_sync_desc">Push local changes to the server and pull changes from other devices (end-to-end encrypted; the server only sees ciphertext).</string>
     <string name="action_sync_now">Sync now</string>

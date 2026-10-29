@@ -3,16 +3,25 @@ package dev.xiaoqiong.vkey.ui
 import android.content.Context
 import android.os.Build
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.layout.Arrangement
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
@@ -46,13 +55,23 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.vector.addPathNodes
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.DialogProperties
@@ -145,6 +164,10 @@ fun SyncScreen(
     var remainingSeconds by remember { mutableLongStateOf(0L) }
     var confirm by remember { mutableStateOf(ConfirmKind.NONE) }
     var syncStats by remember { mutableStateOf<SyncStats?>(null) }
+    // 两张卡片的折叠状态：只存内存（离开本页即恢复默认），不做持久化。
+    // 默认收起；服务端从未配置（serverUrl 为空）时地址卡默认展开，否则新用户找不到入口。
+    var serverCardExpanded by remember { mutableStateOf(serverUrl.isBlank()) }
+    var enrollCardExpanded by remember { mutableStateOf(false) }
 
     /** 统一的任务执行：置忙、清错误、切 IO。 */
     val runTask: (String, suspend () -> Unit) -> Unit = { label, task ->
@@ -467,100 +490,115 @@ fun SyncScreen(
                         Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                     }
 
-                    // ---------------- 服务器地址 ----------------
-                    Card(Modifier.fillMaxWidth()) {
-                        Column(Modifier.padding(16.dp)) {
-                            OutlinedTextField(
-                                value = url,
-                                onValueChange = { url = it },
-                                label = { Text(stringResource(R.string.label_sync_server_url)) },
-                                // 未配置时只给占位示例，不预填任何真实域名
-                                placeholder = {
-                                    if (url.isEmpty()) {
-                                        Text(stringResource(R.string.placeholder_server_url))
+                    // ---------------- 服务器地址（可折叠卡片） ----------------
+                    // 折叠态摘要：已配置显示地址本身（过长中间省略），未配置显示「未配置」
+                    val addressText = url.trim().ifEmpty { device?.server_url.orEmpty() }
+                    val serverSummary = if (addressText.isEmpty()) {
+                        stringResource(R.string.status_not_configured)
+                    } else {
+                        middleEllipsis(addressText)
+                    }
+                    CollapsibleCard(
+                        title = stringResource(R.string.section_server_address),
+                        summary = serverSummary,
+                        expanded = serverCardExpanded,
+                        onToggle = { serverCardExpanded = !serverCardExpanded },
+                    ) {
+                        OutlinedTextField(
+                            value = url,
+                            onValueChange = { url = it },
+                            label = { Text(stringResource(R.string.label_sync_server_url)) },
+                            // 未配置时只给占位示例，不预填任何真实域名
+                            placeholder = {
+                                if (url.isEmpty()) {
+                                    Text(stringResource(R.string.placeholder_server_url))
+                                }
+                            },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Button(
+                                onClick = {
+                                    if (requireValidAddress()) {
+                                        onServerUrlChange(url.trim())
+                                        info = context.getString(R.string.info_server_saved)
                                     }
                                 },
-                                singleLine = true,
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                                modifier = Modifier.fillMaxWidth(),
-                            )
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Button(
-                                    onClick = {
-                                        if (requireValidAddress()) {
-                                            onServerUrlChange(url.trim())
-                                            info = context.getString(R.string.info_server_saved)
-                                        }
-                                    },
-                                    enabled = busy == null && url.trim().isNotEmpty(),
-                                    modifier = Modifier.weight(1f),
-                                ) { Text(stringResource(R.string.action_save_address)) }
-                                Button(
-                                    onClick = { showScan = true },
-                                    enabled = busy == null,
-                                    modifier = Modifier.weight(1f),
-                                ) { Text(stringResource(R.string.action_scan)) }
-                            }
-                            Text(
-                                stringResource(R.string.sync_scan_hint),
-                                style = MaterialTheme.typography.bodySmall,
-                                modifier = Modifier.padding(top = 4.dp),
-                            )
+                                enabled = busy == null && url.trim().isNotEmpty(),
+                                modifier = Modifier.weight(1f),
+                            ) { Text(stringResource(R.string.action_save_address)) }
+                            Button(
+                                onClick = { showScan = true },
+                                enabled = busy == null,
+                                modifier = Modifier.weight(1f),
+                            ) { Text(stringResource(R.string.action_scan)) }
                         }
+                        Text(
+                            stringResource(R.string.sync_scan_hint),
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.padding(top = 4.dp),
+                        )
                     }
 
-                    // ---------------- 用开户码接入（多用户实例注册入口） ----------------
-                    Card(Modifier.fillMaxWidth()) {
-                        Column(Modifier.padding(16.dp)) {
-                            Text(stringResource(R.string.section_enroll), style = MaterialTheme.typography.titleMedium)
-                            Text(
-                                stringResource(R.string.enroll_desc),
-                                style = MaterialTheme.typography.bodySmall,
-                                modifier = Modifier.padding(top = 4.dp),
-                            )
-                            Spacer(Modifier.height(8.dp))
-                            OutlinedTextField(
-                                value = enrollCodeInput,
-                                onValueChange = { enrollCodeInput = it },
-                                label = { Text(stringResource(R.string.label_enroll_code)) },
-                                singleLine = true,
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
-                                modifier = Modifier.fillMaxWidth(),
-                            )
-                            Spacer(Modifier.height(8.dp))
-                            OutlinedTextField(
-                                value = enrollUsernameInput,
-                                onValueChange = { enrollUsernameInput = it },
-                                label = { Text(stringResource(R.string.label_enroll_username)) },
-                                singleLine = true,
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
-                                modifier = Modifier.fillMaxWidth(),
-                            )
-                            Spacer(Modifier.height(8.dp))
-                            OutlinedTextField(
-                                value = deviceName,
-                                onValueChange = { deviceName = it },
-                                label = { Text(stringResource(R.string.label_device_name)) },
-                                singleLine = true,
-                                modifier = Modifier.fillMaxWidth(),
-                            )
-                            Spacer(Modifier.height(8.dp))
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Button(
-                                    onClick = doEnroll,
-                                    enabled = busy == null,
-                                    modifier = Modifier.weight(1f),
-                                ) { Text(stringResource(R.string.action_enroll)) }
-                                Button(
-                                    onClick = { showScan = true },
-                                    enabled = busy == null,
-                                    modifier = Modifier.weight(1f),
-                                ) { Text(stringResource(R.string.action_scan_input)) }
-                            }
+                    // ---------------- 用开户码接入（多用户实例注册入口，可折叠卡片） ----------------
+                    CollapsibleCard(
+                        title = stringResource(R.string.section_enroll),
+                        summary = if (device == null) {
+                            stringResource(R.string.enroll_card_new_account)
+                        } else {
+                            stringResource(R.string.enroll_card_current, device.username)
+                        },
+                        expanded = enrollCardExpanded,
+                        onToggle = { enrollCardExpanded = !enrollCardExpanded },
+                    ) {
+                        Text(
+                            stringResource(R.string.enroll_desc),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = enrollCodeInput,
+                            onValueChange = { enrollCodeInput = it },
+                            label = { Text(stringResource(R.string.label_enroll_code)) },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = enrollUsernameInput,
+                            onValueChange = { enrollUsernameInput = it },
+                            label = { Text(stringResource(R.string.label_enroll_username)) },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = deviceName,
+                            onValueChange = { deviceName = it },
+                            label = { Text(stringResource(R.string.label_device_name)) },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = doEnroll,
+                                enabled = busy == null,
+                                modifier = Modifier.weight(1f),
+                            ) { Text(stringResource(R.string.action_enroll)) }
+                            Button(
+                                onClick = { showScan = true },
+                                enabled = busy == null,
+                                modifier = Modifier.weight(1f),
+                            ) { Text(stringResource(R.string.action_scan_input)) }
                         }
                     }
 
@@ -949,6 +987,91 @@ internal fun isValidServerUrl(raw: String): Boolean {
 }
 
 /**
+ * 可折叠卡片：头部一行（标题 + 折叠态状态摘要 + 展开箭头），展开区做垂直展开动画。
+ *
+ * - 头部整行可点（高度 ≥48dp），折叠时也能看到关键信息（摘要）；
+ * - 折叠时内容完全不进入组合（不是 alpha=0 占位）；
+ * - 展开/收起动画不裁剪内容（`clip = false`），避免输入框描边被切；
+ * - 时长与页面转场一致（[PAGE_TRANSITION_MS]）。
+ *
+ * @param title 卡片标题
+ * @param summary 折叠态状态摘要（单行，过长由调用方做中间省略）
+ * @param expanded 是否展开
+ * @param onToggle 点击头部时切换展开状态
+ * @param content 展开后显示的内容（已带好内边距）
+ */
+@Composable
+private fun CollapsibleCard(
+    title: String,
+    summary: String,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    val arrowRotation by animateFloatAsState(
+        targetValue = if (expanded) 180f else 0f,
+        animationSpec = tween(durationMillis = PAGE_TRANSITION_MS),
+        label = "collapsible-card-arrow",
+    )
+    val stateLabel = stringResource(
+        if (expanded) R.string.state_expanded else R.string.state_collapsed,
+    )
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 48.dp)
+                    .clickable(onClick = onToggle)
+                    .semantics {
+                        role = Role.Button
+                        stateDescription = stateLabel
+                    }
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(title, style = MaterialTheme.typography.titleMedium)
+                Spacer(Modifier.width(12.dp))
+                Text(
+                    text = summary,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.End,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                Spacer(Modifier.width(8.dp))
+                Icon(
+                    imageVector = ExpandMoreIcon,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.rotate(arrowRotation),
+                )
+            }
+            AnimatedVisibility(
+                visible = expanded,
+                enter = expandVertically(
+                    animationSpec = tween(durationMillis = PAGE_TRANSITION_MS),
+                    clip = false,
+                ) + fadeIn(tween(durationMillis = PAGE_TRANSITION_MS)),
+                exit = shrinkVertically(
+                    animationSpec = tween(durationMillis = PAGE_TRANSITION_MS),
+                    clip = false,
+                ) + fadeOut(tween(durationMillis = PAGE_TRANSITION_MS)),
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 16.dp, end = 16.dp, bottom = 16.dp),
+                    content = content,
+                )
+            }
+        }
+    }
+}
+
+/**
  * 单选项一行（整行可点，RadioButton 只做视觉指示）。
  *
  * @param label 选项文案
@@ -1057,4 +1180,45 @@ internal fun describeFailure(context: Context, t: Throwable): String {
     }
     if (t is IllegalArgumentException) return t.message ?: context.getString(R.string.err_invalid_input)
     return t.message ?: t.javaClass.simpleName
+}
+
+/** 状态摘要最长字符数：超出时保留首尾、中间用省略号（卡片头部单行显示，中段才是可省信息）。 */
+private const val SUMMARY_MAX_CHARS = 32
+
+/**
+ * 中间省略：过长文本保留开头与结尾，中间用 `…` 替代。
+ *
+ * Compose 的 [TextOverflow.Ellipsis] 只能尾部省略，而服务器地址的关键信息在两端
+ * （scheme + 域名 / 路径尾段），因此这里先按字符数做中间省略，再由 [TextOverflow.Ellipsis] 兜底。
+ *
+ * @param text 原始文本
+ * @param maxChars 允许的最大字符数（含省略号）
+ * @return 未超长时原样返回
+ */
+private fun middleEllipsis(text: String, maxChars: Int = SUMMARY_MAX_CHARS): String {
+    if (text.length <= maxChars) return text
+    val head = (maxChars + 1) / 2
+    val tail = maxChars - head
+    return text.take(head) + "…" + text.takeLast(tail)
+}
+
+/**
+ * `Icons.Filled.ExpandMore` 的本地等价实现（Material 图标 `expand_more`）。
+ *
+ * 项目只依赖 material-icons-core，扩展图标库（material-icons-extended）不是现有依赖，
+ * 为不引入新依赖，这里内联同一份官方路径数据。
+ */
+private val ExpandMoreIcon: ImageVector by lazy {
+    ImageVector.Builder(
+        name = "ExpandMore",
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f,
+    ).apply {
+        addPath(
+            pathData = addPathNodes("M16.59 8.59L12 13.17 7.41 8.59 6 10l6 6 6-6z"),
+            fill = SolidColor(Color.Black),
+        )
+    }.build()
 }

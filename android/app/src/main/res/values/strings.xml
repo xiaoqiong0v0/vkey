@@ -111,6 +111,12 @@
     <string name="info_server_saved">服务器地址已保存</string>
     <string name="action_save_address">保存地址</string>
     <string name="sync_scan_hint">扫码可识别服务端 /pair 或主页的二维码（内容只有服务器地址）</string>
+    <!-- 可折叠卡片：标题 + 折叠态状态摘要 + 展开/收起无障碍描述 -->
+    <string name="section_server_address">服务端地址</string>
+    <string name="enroll_card_new_account">接入新账号</string>
+    <string name="enroll_card_current">当前：%1$s</string>
+    <string name="state_expanded">已展开</string>
+    <string name="state_collapsed">已收起</string>
     <string name="section_item_sync">条目同步</string>
     <string name="item_sync_desc">把本机改动推送到服务端，并拉回其它设备的改动（端到端加密，服务端只见密文）。</string>
     <string name="action_sync_now">立即同步</string>

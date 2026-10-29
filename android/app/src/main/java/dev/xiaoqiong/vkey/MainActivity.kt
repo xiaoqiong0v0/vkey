@@ -215,6 +215,9 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
      */
     private val onboardingSkippedThisRun = mutableStateOf(false)
 
+    /** 从设置返回首启二选一页（访客态下按返回键时置位，进入主界面后再清掉）。 */
+    private val returnToSetupChoice = mutableStateOf(false)
+
     /**
      * 访客态占位库：首启选了「已有配置」但还没接入时给主页用的空库。
      *
@@ -284,14 +287,18 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
             VkeyTheme(mode = themeMode) {
                 VkeyApp(
                     // 访客态（首启跳过且还没接入）用空库兜主页；不落盘、不生成任何密钥
+                    // 访客态按返回键时回到首启二选一页（此时仍不建库）
                     vault = vault.value
-                        ?: guestVault.takeIf { onboardingSkippedThisRun.value },                    locked = locked.value,
+                        ?: guestVault.takeIf { onboardingSkippedThisRun.value && !returnToSetupChoice.value },
+                    locked = locked.value,
                     lockMessage = lockMessage.value,
                     canRetry = canRetry.value,
                     onRetryLock = { showSystemAuth() },
                     onboardingSkipped = startupState == OnboardingState.SKIPPED_UNCONFIGURED,
                     onSkipOnboarding = { skipOnboarding() },
+                    onGuestBackToSetup = { returnToSetupChoice.value = true },
                     onCreate = { data ->
+                        returnToSetupChoice.value = false
                         vault.value = data
                         locked.value = false
                     },
@@ -459,6 +466,7 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
     private fun skipOnboarding() {
         settings.onboardingSkipped = true
         onboardingSkippedThisRun.value = true
+        returnToSetupChoice.value = false
         settingsTabState.value = SettingsTab.ACCOUNT
         syncPrefillState.value = ""
         enrollPrefillState.value = null
@@ -640,6 +648,7 @@ private fun VkeyApp(
     onRetryLock: () -> Unit,
     onboardingSkipped: Boolean,
     onSkipOnboarding: () -> Unit,
+    onGuestBackToSetup: () -> Unit,
     onCreate: (VaultData) -> Unit,
     onUnlock: () -> Unit,
     onLock: () -> Unit,
@@ -676,6 +685,7 @@ private fun VkeyApp(
         locked -> LockScreen(message = lockMessage, canRetry = canRetry, onRetry = onRetryLock)
         else -> VaultScreen(
             vault = vault,
+            onGuestBackToSetup = onGuestBackToSetup,
             onLock = onLock,
             onPersist = onPersist,
             onPersistVerified = onPersistVerified,
@@ -881,6 +891,7 @@ private fun LockScreen(message: String, canRetry: Boolean, onRetry: () -> Unit) 
 @Composable
 private fun VaultScreen(
     vault: VaultData,
+    onGuestBackToSetup: () -> Unit,
     onLock: () -> Unit,
     onPersist: (VaultData) -> Unit,
     onPersistVerified: (VaultData) -> String?,
@@ -1485,7 +1496,14 @@ private fun VaultScreen(
                 onLanguageChange = onLanguageChange,
                 onClearDevice = { onPersist(vault.copy(device = null)) },
                 onOpenAbout = { topPage = VkeyPage.ABOUT },
-                onClose = { enrollPrefill = null; topPage = VkeyPage.HOME },
+                onClose = {
+                    enrollPrefill = null
+                    // 访客态（首启跳过、仍未接入）从设置返回时回到首启二选一页，而不是空主页
+                    if (vault.device == null && vault.master_key.isEmpty()) {
+                        onGuestBackToSetup()
+                    }
+                    topPage = VkeyPage.HOME
+                },
                 // 与列表页可见条目同口径：至少一条未删除的 totp 条目才显示导出入口
                 canExportTotp = vault.items.any { it.kind == ItemJson.KIND_TOTP && !it.deleted },
                 onExportTotp = onRequestExport,

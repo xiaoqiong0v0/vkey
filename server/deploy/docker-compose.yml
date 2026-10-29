@@ -1,0 +1,29 @@
+# 本地多用户测试环境：admin 模式 + 独立数据卷
+#
+#   docker compose -f server/deploy/docker-compose.yml up -d --build
+#   docker exec -it vkey-test vkeyd user add alice      # 拿开户码
+#   curl http://127.0.0.1:3150/api/v1/policy            # 应为 user_mode=admin
+#   docker compose -f server/deploy/docker-compose.yml down -v   # 清库重来
+#
+# 注意：这里没有 TLS，仅用于本机测试；生产必须由反向代理终结 TLS。
+services:
+  vkeyd:
+    build:
+      context: ../..
+      dockerfile: server/deploy/Dockerfile
+    container_name: vkey-test
+    ports:
+      - "127.0.0.1:3150:3150"
+    volumes:
+      - vkey-data:/data
+    environment:
+      - TZ=Asia/Shanghai
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3150/api/v1/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  vkey-data:

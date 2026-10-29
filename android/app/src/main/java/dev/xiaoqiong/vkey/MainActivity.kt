@@ -197,6 +197,18 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                         vault.value = data
                         store.write(data)
                     },
+                    onPersistVerified = { data ->
+                        // 配置类写入专用：落盘 + 读回比对 device_id，校验通过才提交内存状态；
+                        // 失败返回错误文案（由 UI 显式展示，绝不静默）
+                        runCatching { store.writeAndVerify(data) }
+                            .onSuccess { vault.value = data }
+                            .fold(
+                                onSuccess = { null },
+                                onFailure = {
+                                    getString(R.string.err_vault_save_failed, describeFailure(this, it))
+                                },
+                            )
+                    },
                     autoLockOnResume = settings.autoLockOnResume,
                     onAutoLockChange = { settings.autoLockOnResume = it },
                     serverUrl = settings.serverUrl,
@@ -346,6 +358,7 @@ private fun VkeyApp(
     onUnlock: () -> Unit,
     onLock: () -> Unit,
     onPersist: (VaultData) -> Unit,
+    onPersistVerified: (VaultData) -> String?,
     autoLockOnResume: Boolean,
     onAutoLockChange: (Boolean) -> Unit,
     serverUrl: String,
@@ -365,6 +378,7 @@ private fun VkeyApp(
             vault = vault,
             onLock = onLock,
             onPersist = onPersist,
+            onPersistVerified = onPersistVerified,
             autoLockOnResume = autoLockOnResume,
             onAutoLockChange = onAutoLockChange,
             serverUrl = serverUrl,
@@ -465,6 +479,7 @@ private fun VaultScreen(
     vault: VaultData,
     onLock: () -> Unit,
     onPersist: (VaultData) -> Unit,
+    onPersistVerified: (VaultData) -> String?,
     autoLockOnResume: Boolean,
     onAutoLockChange: (Boolean) -> Unit,
     serverUrl: String,
@@ -793,15 +808,19 @@ private fun VaultScreen(
             VkeyPage.SYNC -> dev.xiaoqiong.vkey.ui.SyncScreen(
                 masterKey = vault.master_key,
                 device = vault.device,
+                hasLocalItems = vault.items.any { !it.deleted },
                 serverUrl = serverUrl,
                 lastSyncAt = vault.lastSyncAt,
                 onSyncNow = doSync,
                 initialPairCode = syncPrefill.takeIf { it.isNotBlank() },
                 onSaved = { config, newMasterKey ->
-                    // 配对拿到的 master_key 才是账号密钥：以它为准（本地条目保留）
-                    onPersist(
-                        vault.copy(
-                            master_key = newMasterKey ?: vault.master_key,
+                    // 配对/开户拿到的 master_key 才是账号密钥：以它为准（本地条目保留）。
+                    // 走 latestVault 而非闭包捕获的 vault，避免陈旧快照覆盖并发写入；
+                    // 落盘并读回校验成功后才提交内存状态，失败回传错误文案（null = 成功）
+                    val base = latestVault
+                    onPersistVerified(
+                        base.copy(
+                            master_key = newMasterKey ?: base.master_key,
                             device = config,
                         ),
                     )

@@ -129,4 +129,65 @@ class LinksTest {
         assertTrue(SyncManager.looksLikeKey(text))
         assertFalse(SyncManager.looksLikeKey(Base32.encode(ByteArray(16))))
     }
+
+    // ------------------------------------------------------------------
+    // 开户码 ENROLL-XXXX-XXXX
+    // ------------------------------------------------------------------
+
+    @Test
+    fun `parseEnrollCode 接受规范形式`() {
+        assertEquals("ENROLL-AB12-CD34", Links.parseEnrollCode("ENROLL-AB12-CD34"))
+    }
+
+    @Test
+    fun `parseEnrollCode 大小写不敏感`() {
+        assertEquals("ENROLL-AB12-CD34", Links.parseEnrollCode("enroll-ab12-cd34"))
+    }
+
+    @Test
+    fun `parseEnrollCode 容忍空格与换行（粘贴场景）`() {
+        assertEquals("ENROLL-AB12-CD34", Links.parseEnrollCode("  ENROLL-AB12 - CD34 \n"))
+        assertEquals("ENROLL-AB12-CD34", Links.parseEnrollCode("ENROLL - AB12 - CD34"))
+    }
+
+    @Test
+    fun `parseEnrollCode 拒绝丢失分组连字符的码`() {
+        // 服务端规范化只去空白、转大写（`-` 属格式一部分、参与哈希）；
+        // 无连字符的粘贴串对不上服务端哈希，本地必须提前拒掉。
+        assertNull(Links.parseEnrollCode("ENROLL AB12 CD34"))
+        assertNull(Links.parseEnrollCode("ENROLLAB12CD34"))
+    }
+
+    @Test
+    fun `parseEnrollCode 前缀错误返回 null`() {
+        assertNull(Links.parseEnrollCode("PAIR-AB12-CD34"))
+        assertNull(Links.parseEnrollCode("ENROLLX-AB12-CD34"))
+    }
+
+    @Test
+    fun `parseEnrollCode 分组长度或组数不对返回 null`() {
+        assertNull(Links.parseEnrollCode("ENROLL-AB1-CD34"))
+        assertNull(Links.parseEnrollCode("ENROLL-AB123-CD34"))
+        assertNull(Links.parseEnrollCode("ENROLL-AB12-CD34-EF56"))
+        assertNull(Links.parseEnrollCode("ENROLL-AB12"))
+        assertNull(Links.parseEnrollCode(""))
+    }
+
+    @Test
+    fun `parseEnrollCode 拒绝链接与其它码`() {
+        assertNull(Links.parseEnrollCode("vkey://config?server=https://x"))
+        assertNull(Links.parseEnrollCode(Base32.encode(ByteArray(32))))
+    }
+
+    @Test
+    fun `classify 识别开户码文本`() {
+        assertEquals(ScanLink.EnrollCode("ENROLL-AB12-CD34"), Links.classify("enroll-ab12-cd34"))
+    }
+
+    @Test
+    fun `classify 不误伤配对码与配置深链`() {
+        val key = Base32.encode(ByteArray(32) { (it % 7).toByte() })
+        assertEquals(ScanLink.PairCode(key), Links.classify(key))
+        assertTrue(Links.classify("vkey://config?server=https://x") is ScanLink.ServerConfig)
+    }
 }

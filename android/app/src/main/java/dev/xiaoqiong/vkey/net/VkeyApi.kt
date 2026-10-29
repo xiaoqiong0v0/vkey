@@ -115,6 +115,19 @@ data class PairNewResponse(
     @SerialName("expires_at") val expiresAt: Long,
 )
 
+/** `POST /api/v1/auth/enroll` 响应（开户码接入）。 */
+@Serializable
+data class EnrollResponse(
+    /** base64url(16B) 设备 id。 */
+    @SerialName("device_id") val deviceId: String,
+    /** base64url(32B) 设备 token。 */
+    val token: String,
+    /** base64url(16B) 用户 id。 */
+    @SerialName("user_id") val userId: String,
+    /** 服务端确认的账号名（开户码绑定的用户名）。 */
+    val username: String,
+)
+
 /** `POST /api/v1/pair/claim` 响应。 */
 @Serializable
 data class PairClaimResponse(
@@ -219,6 +232,39 @@ class VkeyApi(
             device = DevicePayload(name = deviceName, platform = platform, pubkey = Crypto.b64urlEncode(pubkey)),
         )
         val response = execute<AuthTokenResponse>(post("/api/v1/auth/token", body))
+        token = response.token
+        return response
+    }
+
+    /**
+     * 用一次性开户码接入新账号（免鉴权，限流 60 次/分钟/IP）。
+     *
+     * 成功后把返回的 token 写入 [token]。`master_key` 只在客户端生成，
+     * 服务端只见 `verifier`（零知识）。
+     *
+     * @param code 规范化后的开户码原文（`ENROLL-XXXX-XXXX`，大写）
+     * @param username 用户名（必须与开户码绑定值一致）
+     * @param verifier 32B verifier（[Crypto.verifier] 的结果）
+     * @param deviceName 设备名（1..128 字节）
+     * @param platform 平台标识，如 `android`
+     * @param pubkey 32B Ed25519 原始公钥
+     * @return 服务端响应
+     */
+    fun enroll(
+        code: String,
+        username: String,
+        verifier: ByteArray,
+        deviceName: String,
+        platform: String,
+        pubkey: ByteArray,
+    ): EnrollResponse {
+        val body = EnrollRequest(
+            code = code,
+            username = username,
+            verifier = Crypto.b64urlEncode(verifier),
+            device = DevicePayload(name = deviceName, platform = platform, pubkey = Crypto.b64urlEncode(pubkey)),
+        )
+        val response = execute<EnrollResponse>(post("/api/v1/auth/enroll", body))
         token = response.token
         return response
     }
@@ -426,6 +472,14 @@ private data class PairNewRequest(
     @SerialName("code_id") val codeId: String,
     val code: String,
     val blob: String,
+)
+
+@Serializable
+private data class EnrollRequest(
+    val code: String,
+    val username: String,
+    val verifier: String,
+    val device: DevicePayload,
 )
 
 @Serializable

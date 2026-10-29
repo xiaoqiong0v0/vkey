@@ -102,7 +102,7 @@
 
     <!-- ============ 同步配置 ============ -->
     <string name="status_not_configured">未配置</string>
-    <string name="status_logged_in">已登录</string>
+    <string name="status_logged_in">已登录：%1$s</string>
     <string name="sync_configure_hint">输入 master_key 或配对码完成配置；也可以先扫服务端二维码自动填好地址。</string>
     <string name="label_device">设备：%1$s</string>
     <string name="label_server">服务器：%1$s</string>
@@ -153,8 +153,31 @@
     <string name="info_server_set">服务器地址已设置：%1$s</string>
     <string name="info_pair_code_detected">已识别配对码，点「领取并完成配置」继续</string>
 
+    <!-- ============ 开户码接入 ============ -->
+    <string name="section_enroll">用开户码接入</string>
+    <string name="enroll_desc">输入管理员签发的一次性开户码：主密钥在本机生成并保存，服务端只见校验值。成功后账号与该用户名绑定。</string>
+    <string name="label_enroll_code">开户码（形如 ENROLL-XXXX-XXXX）</string>
+    <string name="label_enroll_username">用户名（与开户码绑定值一致）</string>
+    <string name="action_enroll">接入</string>
+    <string name="busy_enrolling">正在用开户码接入…</string>
+    <string name="info_enrolled">已接入账号：%1$s</string>
+    <string name="info_enroll_code_detected">已识别开户码，点「接入」继续</string>
+    <string name="err_enroll_code_format">开户码格式不对：应为 ENROLL- 前缀 + 4-4 位分组（大小写与空格不限）</string>
+    <string name="err_enroll_username_empty">请输入用户名（必须与管理员开户时一致）</string>
+    <string name="dialog_enroll_overwrite_title">接入新账号？</string>
+    <string name="dialog_enroll_overwrite_text">接入新账号会替换当前同步配置；本地已有条目将推送到新账号。</string>
+    <string name="enroll_recovery_title">恢复码（只显示这一次）</string>
+    <string name="enroll_recovery_hint">这是新账号的主密钥（52 位）。请立即抄写并保存到安全的地方；丢失后任何设备都无法找回你的数据。</string>
+    <string name="enroll_saved_check">我已抄写恢复码</string>
+    <string name="action_enroll_done">完成</string>
+    <string name="action_enroll_cancel">未完成</string>
+    <string name="info_enroll_abandoned">接入未完成，未保存任何配置；可重新输入开户码再来</string>
+
     <!-- ============ 错误文案（describeFailure） ============ -->
-    <string name="err_enter_server_url">请先填写服务器地址</string>
+    <string name="err_enter_server_url">未配置服务端：请先填写服务器地址</string>
+    <string name="err_vault_save_failed">本地保存失败（配置未写入，可重试）：%1$s</string>
+    <string name="placeholder_server_url">https://vkey.example.com</string>
+    <string name="err_server_url_scheme">服务器地址必须以 http:// 或 https:// 开头</string>
     <string name="err_master_key_format">master_key 必须是 52 位 base32（可用空格/连字符分组）</string>
     <string name="err_pair_code_format">配对码必须是 52 位 base32（可用空格/连字符分组）</string>
     <string name="err_network">网络不通：%1$s</string>
@@ -169,6 +192,14 @@
     <string name="err_not_configured">本机尚未完成同步配置</string>
     <string name="err_stale_write">该凭据已在其它设备变更，请刷新后重试</string>
     <string name="err_server_rejected">服务端拒绝写入（%1$s）</string>
+
+    <!-- ============ 开户码接入错误文案（enrollErrorRes） ============ -->
+    <string name="err_enroll_invalid_code">开户码无效（不存在、已使用或已撤销）</string>
+    <string name="err_enroll_code_expired">开户码已过期，请管理员重新签发</string>
+    <string name="err_enroll_username_taken">用户名已被占用，请核对开户码绑定的用户名</string>
+    <string name="err_enroll_invalid_verifier">校验值无效（服务端拒绝）</string>
+    <string name="err_enroll_quota_devices">该账号设备数已达上限</string>
+    <string name="err_enroll_disabled">服务端未开启开户功能（single 模式）</string>
 
     <!-- ============ 扫码页 ============ -->
     <string name="scan_waiting_permission">等待相机权限…</string>
@@ -190,6 +221,7 @@
     <string name="scan_err_empty">内容为空</string>
     <string name="scan_err_config_qr_wrong_page">这是同步配置二维码，请在「设置 → 同步配置」里扫描</string>
     <string name="scan_err_pair_code_wrong_page">这是设备配对码，请在「设置 → 同步配置」里使用</string>
+    <string name="scan_err_enroll_code_wrong_page">这是开户码，请在「设置 → 用开户码接入」里使用</string>
     <string name="scan_err_not_otpauth">二维码不是有效的 otpauth:// 链接</string>
     <string name="scan_err_not_config_qr">不是同步配置 / 配对二维码</string>
 

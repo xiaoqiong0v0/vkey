@@ -87,6 +87,7 @@ private val FRAME_MAX = 320.dp
  * @param onResult 解析出的 TOTP 条目（null 表示本次扫码不是用来加 TOTP）
  * @param onConfigLink 识别到同步配置深链，参数为服务器地址
  * @param onPairCode 识别到配对码（深链或裸码），参数为原文
+ * @param onEnrollCode 识别到开户码（`ENROLL-XXXX-XXXX`），参数为规范化原文
  * @param onCancel 用户取消
  */
 @Composable
@@ -94,6 +95,7 @@ fun ScanScreen(
     onResult: ((TotpItem) -> Unit)? = null,
     onConfigLink: ((String) -> Unit)? = null,
     onPairCode: ((String) -> Unit)? = null,
+    onEnrollCode: ((String) -> Unit)? = null,
     onCancel: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -140,7 +142,7 @@ fun ScanScreen(
                     if (raw == null) {
                         error = context.getString(R.string.scan_err_no_qr_in_image)
                     } else {
-                        dispatchRaw(context, raw, onResult, onConfigLink, onPairCode) { error = it }
+                        dispatchRaw(context, raw, onResult, onConfigLink, onPairCode, onEnrollCode) { error = it }
                     }
                 }.addOnFailureListener { e ->
                     error = context.getString(R.string.scan_err_image_decode, e.message.orEmpty())
@@ -219,7 +221,7 @@ fun ScanScreen(
                             processProxy(proxy, scanner) { raw ->
                                 android.util.Log.i("vkey-scan", "barcode raw=${raw.take(32)}")
                                 if (!handled) {
-                                    val consumed = dispatchRaw(context, raw, onResult, onConfigLink, onPairCode) {
+                                    val consumed = dispatchRaw(context, raw, onResult, onConfigLink, onPairCode, onEnrollCode) {
                                     error = it
                                 }
                                     if (consumed) handled = true
@@ -379,7 +381,7 @@ fun ScanScreen(
             confirmButton = {
                 androidx.compose.material3.TextButton(onClick = {
                     showPaste = false
-                    dispatchRaw(context, text, onResult, onConfigLink, onPairCode) { error = it }
+                    dispatchRaw(context, text, onResult, onConfigLink, onPairCode, onEnrollCode) { error = it }
                 }) { Text(stringResource(R.string.action_recognize)) }
             },
             dismissButton = {
@@ -394,13 +396,14 @@ fun ScanScreen(
 /**
  * 把一段扫码/粘贴文本分发给对应流程。
  *
- * 顺序：同步配置深链 → 配对码（深链或裸码） → `otpauth://`。
+ * 顺序：同步配置深链 → 配对码（深链或裸码） → 开户码 → `otpauth://`。
  * 未提供对应回调时给出明确提示，而不是静默失败。
  *
  * @param raw 扫码或粘贴的原文
  * @param onResult TOTP 回调（可为 null）
  * @param onConfigLink 同步配置回调（可为 null）
  * @param onPairCode 配对码回调（可为 null）
+ * @param onEnrollCode 开户码回调（可为 null）
  * @param onError 无法消费时的提示
  * @return true 表示已被某个流程消费
  */
@@ -410,6 +413,7 @@ private fun dispatchRaw(
     onResult: ((TotpItem) -> Unit)?,
     onConfigLink: ((String) -> Unit)?,
     onPairCode: ((String) -> Unit)?,
+    onEnrollCode: ((String) -> Unit)?,
     onError: (String) -> Unit,
 ): Boolean {
     val text = raw.trim()
@@ -438,6 +442,15 @@ private fun dispatchRaw(
             val callback = onPairCode
             if (callback == null) {
                 onError(context.getString(R.string.scan_err_pair_code_wrong_page))
+                return false
+            }
+            callback(link.code)
+            return true
+        }
+        is ScanLink.EnrollCode -> {
+            val callback = onEnrollCode
+            if (callback == null) {
+                onError(context.getString(R.string.scan_err_enroll_code_wrong_page))
                 return false
             }
             callback(link.code)

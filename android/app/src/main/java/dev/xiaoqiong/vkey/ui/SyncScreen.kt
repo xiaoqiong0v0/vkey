@@ -23,6 +23,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -54,9 +55,12 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.DialogProperties
 import dev.xiaoqiong.vkey.R
 import dev.xiaoqiong.vkey.net.ApiException
+import dev.xiaoqiong.vkey.sync.EnrollResult
 import dev.xiaoqiong.vkey.sync.GeneratedPairCode
+import dev.xiaoqiong.vkey.sync.Links
 import dev.xiaoqiong.vkey.sync.SyncManager
 import dev.xiaoqiong.vkey.sync.SyncStats
 import dev.xiaoqiong.vkey.vault.DeviceConfig
@@ -71,7 +75,7 @@ import java.util.Date
 import java.util.Locale
 
 /** 需要二次确认的破坏性操作。 */
-private enum class ConfirmKind { NONE, CLEAR_DEVICE }
+private enum class ConfirmKind { NONE, CLEAR_DEVICE, ENROLL }
 
 /**
  * 同步配置页（M3.2 前半）：未配置 → 已登录 的单一状态机。
@@ -85,11 +89,13 @@ private enum class ConfirmKind { NONE, CLEAR_DEVICE }
  *
  * @param masterKey 当前库的 master_key（base32），用于生成配对码与校正账号密钥
  * @param device 已保存的设备材料；null 表示未配置
+ * @param hasLocalItems 本地是否已有未删除的条目（开户码接入前需要二次确认）
  * @param serverUrl 当前设置的同步服务地址
  * @param lastSyncAt 最近一次同步完成时间（unix 秒）；0 = 从未同步
  * @param onSyncNow 执行一次条目同步（由上层持库状态，内部切 IO 并落盘）；返回统计
  * @param initialPairCode 从扫码/深链带进来的配对码（可为 null）
- * @param onSaved 配置成功回调：新设备材料 + 需要替换的 master_key（null 表示与本地一致）
+ * @param onSaved 配置成功回调：新设备材料 + 需要替换的 master_key（null 表示与本地一致）；
+ *   **同步落盘并读回校验**，返回 null = 已持久化，非 null = 错误文案（未落盘，可重试）
  * @param onServerUrlChange 服务器地址变化（持久化到 AppSettings）
  * @param onClearDevice 断开配对（清除设备材料）
  * @param onOpenAbout 打开「关于」页
@@ -100,11 +106,12 @@ private enum class ConfirmKind { NONE, CLEAR_DEVICE }
 fun SyncScreen(
     masterKey: String,
     device: DeviceConfig?,
+    hasLocalItems: Boolean,
     serverUrl: String,
     lastSyncAt: Long,
     onSyncNow: suspend () -> SyncStats,
     initialPairCode: String?,
-    onSaved: (DeviceConfig, String?) -> Unit,
+    onSaved: (DeviceConfig, String?) -> String?,
     onServerUrlChange: (String) -> Unit,
     onClearDevice: () -> Unit,
     autoLockOnResume: Boolean,
@@ -125,6 +132,11 @@ fun SyncScreen(
     var deviceName by remember { mutableStateOf(device?.device_name ?: defaultDeviceName()) }
     var masterKeyInput by remember { mutableStateOf("") }
     var pairCodeInput by remember { mutableStateOf(initialPairCode.orEmpty()) }
+    var enrollCodeInput by remember { mutableStateOf("") }
+    var enrollUsernameInput by remember { mutableStateOf("") }
+    // 开户成功后的待发材料：非 null 时展示恢复码确认弹窗（勾选后才落盘）
+    var enrollPending by remember { mutableStateOf<EnrollResult?>(null) }
+    var enrollAck by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var info by remember { mutableStateOf<String?>(null) }
@@ -152,13 +164,29 @@ fun SyncScreen(
         }
     }
 
+    /** 校验服务器地址：空 → 「未配置」；协议头不对 → scheme 错误。通过返回 true。 */
+    val requireValidAddress: () -> Boolean = {
+        val address = url.trim()
+        when {
+            address.isEmpty() -> {
+                error = context.getString(R.string.err_enter_server_url)
+                false
+            }
+            !isValidServerUrl(address) -> {
+                error = context.getString(R.string.err_server_url_scheme)
+                false
+            }
+            else -> true
+        }
+    }
+
     /** 用 master_key 登录。 */
     val doLogin: () -> Unit = {
         val mk = masterKeyInput.trim()
         val address = url.trim()
         when {
             busy != null -> Unit
-            address.isEmpty() -> error = context.getString(R.string.err_enter_server_url)
+            !requireValidAddress() -> Unit
             !SyncManager.looksLikeKey(mk) ->
                 error = context.getString(R.string.err_master_key_format)
             else -> runTask(context.getString(R.string.busy_logging_in)) {
@@ -166,9 +194,14 @@ fun SyncScreen(
                     SyncManager.login(address, mk, deviceName, device?.seed)
                 }
                 onServerUrlChange(result.config.server_url)
-                onSaved(result.config, result.masterKeyBase32.takeIf { it != masterKey })
-                masterKeyInput = ""
-                info = context.getString(R.string.info_logged_in, result.config.device_name)
+                // 落盘校验失败：保留输入、显式报错，不谎称「已登录」
+                val failure = onSaved(result.config, result.masterKeyBase32.takeIf { it != masterKey })
+                if (failure != null) {
+                    error = failure
+                } else {
+                    masterKeyInput = ""
+                    info = context.getString(R.string.info_logged_in, result.config.device_name)
+                }
             }
         }
     }
@@ -179,7 +212,7 @@ fun SyncScreen(
         val address = url.trim()
         when {
             busy != null -> Unit
-            address.isEmpty() -> error = context.getString(R.string.err_enter_server_url)
+            !requireValidAddress() -> Unit
             !SyncManager.looksLikeKey(code) ->
                 error = context.getString(R.string.err_pair_code_format)
             else -> runTask(context.getString(R.string.busy_claiming_pair_code)) {
@@ -187,10 +220,54 @@ fun SyncScreen(
                     SyncManager.pair(address, code, deviceName, device?.seed)
                 }
                 onServerUrlChange(result.config.server_url)
-                onSaved(result.config, result.masterKeyBase32.takeIf { it != masterKey })
-                pairCodeInput = ""
-                info = context.getString(R.string.info_paired, result.config.device_name)
+                val failure = onSaved(result.config, result.masterKeyBase32.takeIf { it != masterKey })
+                if (failure != null) {
+                    error = failure
+                } else {
+                    pairCodeInput = ""
+                    info = context.getString(R.string.info_paired, result.config.device_name)
+                }
             }
+        }
+    }
+
+    /** 执行开户码接入（已过校验与二次确认）。 */
+    val runEnroll: (address: String, code: String, username: String) -> Unit = { address, code, username ->
+        runTask(context.getString(R.string.busy_enrolling)) {
+            val result = try {
+                SyncManager.enroll(address, code, username, deviceName, device?.seed)
+            } catch (e: ApiException) {
+                // 开户类错误码换成开户语境文案；其余交回 describeFailure 统一处理
+                val resId = enrollErrorRes(e.code)
+                if (resId != 0) {
+                    error = context.getString(resId)
+                    null
+                } else {
+                    throw e
+                }
+            }
+            if (result != null) {
+                enrollAck = false
+                enrollPending = result
+                enrollCodeInput = ""
+                enrollUsernameInput = ""
+            }
+        }
+    }
+
+    /** 用开户码接入：校验 → （必要时）二次确认 → 请求。 */
+    val doEnroll: () -> Unit = {
+        val canonical = Links.parseEnrollCode(enrollCodeInput)
+        val address = url.trim()
+        val username = enrollUsernameInput.trim()
+        when {
+            busy != null -> Unit
+            !requireValidAddress() -> Unit
+            canonical == null -> error = context.getString(R.string.err_enroll_code_format)
+            username.isEmpty() -> error = context.getString(R.string.err_enroll_username_empty)
+            // 已有配置或本地条目：接入新账号是破坏性动作，先二次确认
+            device != null || hasLocalItems -> confirm = ConfirmKind.ENROLL
+            else -> runEnroll(address, canonical, username)
         }
     }
 
@@ -259,6 +336,11 @@ fun SyncScreen(
                     pairCodeInput = code
                     showScan = false
                     info = context.getString(R.string.info_pair_code_detected)
+                },
+                onEnrollCode = { code ->
+                    enrollCodeInput = code
+                    showScan = false
+                    info = context.getString(R.string.info_enroll_code_detected)
                 },
                 onCancel = { showScan = false },
             )
@@ -345,7 +427,8 @@ fun SyncScreen(
                                 text = if (device == null) {
                                     stringResource(R.string.status_not_configured)
                                 } else {
-                                    stringResource(R.string.status_logged_in)
+                                    // 顶部状态直接带上账号名：接入完成后一眼可确认「已登录：xxx」
+                                    stringResource(R.string.status_logged_in, device.username)
                                 },
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Medium,
@@ -391,6 +474,12 @@ fun SyncScreen(
                                 value = url,
                                 onValueChange = { url = it },
                                 label = { Text(stringResource(R.string.label_sync_server_url)) },
+                                // 未配置时只给占位示例，不预填任何真实域名
+                                placeholder = {
+                                    if (url.isEmpty()) {
+                                        Text(stringResource(R.string.placeholder_server_url))
+                                    }
+                                },
                                 singleLine = true,
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
                                 modifier = Modifier.fillMaxWidth(),
@@ -402,8 +491,10 @@ fun SyncScreen(
                             ) {
                                 Button(
                                     onClick = {
-                                        onServerUrlChange(url)
-                                        info = context.getString(R.string.info_server_saved)
+                                        if (requireValidAddress()) {
+                                            onServerUrlChange(url.trim())
+                                            info = context.getString(R.string.info_server_saved)
+                                        }
                                     },
                                     enabled = busy == null && url.trim().isNotEmpty(),
                                     modifier = Modifier.weight(1f),
@@ -419,6 +510,57 @@ fun SyncScreen(
                                 style = MaterialTheme.typography.bodySmall,
                                 modifier = Modifier.padding(top = 4.dp),
                             )
+                        }
+                    }
+
+                    // ---------------- 用开户码接入（多用户实例注册入口） ----------------
+                    Card(Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(16.dp)) {
+                            Text(stringResource(R.string.section_enroll), style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                stringResource(R.string.enroll_desc),
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier.padding(top = 4.dp),
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            OutlinedTextField(
+                                value = enrollCodeInput,
+                                onValueChange = { enrollCodeInput = it },
+                                label = { Text(stringResource(R.string.label_enroll_code)) },
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            OutlinedTextField(
+                                value = enrollUsernameInput,
+                                onValueChange = { enrollUsernameInput = it },
+                                label = { Text(stringResource(R.string.label_enroll_username)) },
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            OutlinedTextField(
+                                value = deviceName,
+                                onValueChange = { deviceName = it },
+                                label = { Text(stringResource(R.string.label_device_name)) },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Button(
+                                    onClick = doEnroll,
+                                    enabled = busy == null,
+                                    modifier = Modifier.weight(1f),
+                                ) { Text(stringResource(R.string.action_enroll)) }
+                                Button(
+                                    onClick = { showScan = true },
+                                    enabled = busy == null,
+                                    modifier = Modifier.weight(1f),
+                                ) { Text(stringResource(R.string.action_scan_input)) }
+                            }
                         }
                     }
 
@@ -494,7 +636,8 @@ fun SyncScreen(
                                     // 直接给二维码：另一台设备扫码即可带走 master_key（不用手抄）
                                     Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
                                         QrCodeImage(
-                                            content = "vkey://pair?code=${pairCode.codeText}&server=${normalizeUrl(url)}",
+                                            content = "vkey://pair?code=${pairCode.codeText}" +
+                                                "&server=${normalizeUrl(url).ifBlank { device.server_url }}",
                                             size = 220.dp,
                                         )
                                     }
@@ -688,6 +831,121 @@ fun SyncScreen(
             },
         )
     }
+
+    // 接入新账号前的二次确认（已有配对或已有条目时）
+    if (confirm == ConfirmKind.ENROLL) {
+        AlertDialog(
+            onDismissRequest = { confirm = ConfirmKind.NONE },
+            title = { Text(stringResource(R.string.dialog_enroll_overwrite_title)) },
+            text = { Text(stringResource(R.string.dialog_enroll_overwrite_text)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirm = ConfirmKind.NONE
+                    val canonical = Links.parseEnrollCode(enrollCodeInput)
+                    val username = enrollUsernameInput.trim()
+                    val address = url.trim()
+                    when {
+                        address.isEmpty() -> error = context.getString(R.string.err_enter_server_url)
+                        !isValidServerUrl(address) ->
+                            error = context.getString(R.string.err_server_url_scheme)
+                        canonical != null && username.isNotEmpty() -> runEnroll(address, canonical, username)
+                    }
+                }) { Text(stringResource(R.string.action_enroll)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirm = ConfirmKind.NONE }) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            },
+        )
+    }
+
+    // 开户成功：必须先抄写恢复码（勾选确认）才能落盘；取消/返回则不保存并提示可重试
+    enrollPending?.let { result ->
+        AlertDialog(
+            onDismissRequest = {
+                // 「直接返回」= 放弃本次接入：丢弃待发材料、不落盘、提示可重新输入开户码
+                enrollPending = null
+                enrollAck = false
+                info = context.getString(R.string.info_enroll_abandoned)
+            },
+            properties = DialogProperties(dismissOnBackPress = true, dismissOnClickOutside = false),
+            title = { Text(stringResource(R.string.enroll_recovery_title)) },
+            text = {
+                Column {
+                    Text(
+                        stringResource(R.string.enroll_recovery_hint),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Card(Modifier.fillMaxWidth()) {
+                        Text(
+                            text = result.masterKeyBase32.chunked(4).joinToString(" "),
+                            modifier = Modifier.padding(12.dp),
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Medium,
+                        )
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    TextButton(onClick = {
+                        copyToClipboard(context, result.masterKeyBase32, sensitive = true)
+                    }) { Text(stringResource(R.string.setup_copy_recovery)) }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(checked = enrollAck, onCheckedChange = { enrollAck = it })
+                        Text(stringResource(R.string.enroll_saved_check))
+                    }
+                    // 落盘失败在弹窗内直接可见（弹窗保持打开，可重试「完成」）
+                    error?.let {
+                        Text(
+                            text = it,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.padding(top = 4.dp),
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        // 勾选确认后才落盘：先写服务器地址，再写 DeviceConfig + master_key；
+                        // onSaved 内部「写盘 + 读回比对 device_id」，成功才关闭弹窗
+                        onServerUrlChange(result.config.server_url)
+                        val failure = onSaved(result.config, result.masterKeyBase32)
+                        if (failure == null) {
+                            enrollPending = null
+                            enrollAck = false
+                            info = context.getString(R.string.info_enrolled, result.config.username)
+                        } else {
+                            error = failure
+                        }
+                    },
+                    enabled = enrollAck,
+                ) { Text(stringResource(R.string.action_enroll_done)) }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    enrollPending = null
+                    enrollAck = false
+                    info = context.getString(R.string.info_enroll_abandoned)
+                }) { Text(stringResource(R.string.action_enroll_cancel)) }
+            },
+        )
+    }
+}
+
+/**
+ * 校验服务器地址：仅接受 `http://` 或 `https://` 前缀（大小写不限、已去首尾空白）。
+ *
+ * 默认服务地址为空串（不内置生产域名），因此所有发起请求前的入口都必须先过这里。
+ *
+ * @param raw 去空白后的地址文本
+ * @return 合法时为 true
+ */
+internal fun isValidServerUrl(raw: String): Boolean {
+    val lower = raw.lowercase()
+    return lower.startsWith("http://") || lower.startsWith("https://")
 }
 
 /**
@@ -751,6 +1009,25 @@ internal fun formatSyncTime(context: Context, unixSeconds: Long): String {
     if (unixSeconds <= 0L) return context.getString(R.string.sync_never)
     val format = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
     return format.format(Date(unixSeconds * 1000L))
+}
+
+/**
+ * 把开户码接入（`POST /auth/enroll`）的服务端错误码映射成开户语境文案。
+ *
+ * `invalid_code` / `code_expired` 在配对语境已有文案，开户语境含义不同，
+ * 这里覆盖；其余错误码返回 0，交回 [describeFailure] 统一处理。
+ *
+ * @param code [ApiException.code]
+ * @return strings 资源 id；0 表示无专属映射
+ */
+internal fun enrollErrorRes(code: String): Int = when (code) {
+    "invalid_code" -> R.string.err_enroll_invalid_code
+    "code_expired" -> R.string.err_enroll_code_expired
+    "username_taken" -> R.string.err_enroll_username_taken
+    "invalid_verifier" -> R.string.err_enroll_invalid_verifier
+    "quota_devices" -> R.string.err_enroll_quota_devices
+    "enroll_disabled" -> R.string.err_enroll_disabled
+    else -> 0
 }
 
 /**

@@ -5,6 +5,7 @@ import android.security.keystore.KeyProperties
 import android.util.Base64
 import kotlinx.serialization.json.Json
 import java.io.File
+import java.io.IOException
 import java.security.KeyStore
 import java.security.SecureRandom
 import javax.crypto.Cipher
@@ -80,7 +81,29 @@ class VaultStore(private val dir: File) {
         tmp.writeText(json.encodeToString(SealedVault.serializer(), sealed))
         if (!tmp.renameTo(file)) {
             file.delete()
-            tmp.renameTo(file)
+            // 兜底 rename 仍失败必须抛错：否则磁盘停留在旧内容、调用方却以为已保存
+            if (!tmp.renameTo(file)) {
+                tmp.delete()
+                throw IOException("vault.json replace failed (renameTo=false)")
+            }
+        }
+    }
+
+    /**
+     * 落盘并读回校验：任何一步失败都抛异常，**绝不静默**。
+     *
+     * 校验口径：[write] 成功后重新 [read]，用 [persistedMatches] 比对
+     * master_key 与 device_id（device_id 为服务端唯一 id，读回一致即证明
+     * 本次配置真正落盘且 Keystore 链路可用）。
+     *
+     * @param data 期望落盘的库内容
+     * @throws IOException 写入失败、读回解密失败或读回内容与期望不一致
+     */
+    fun writeAndVerify(data: VaultData) {
+        write(data)
+        val back = read() ?: throw IOException("vault read-back failed after write")
+        if (!persistedMatches(data, back)) {
+            throw IOException("vault read-back mismatch (master_key or device_id)")
         }
     }
 
@@ -103,3 +126,15 @@ class VaultStore(private val dir: File) {
         return generator.generateKey()
     }
 }
+
+/**
+ * 读回校验的纯函数部分：读回库必须与期望库同主密钥，且设备标识一致。
+ *
+ * @param expected 期望落盘的库
+ * @param back 实际读回的库；null（解密/解析失败）视为不匹配
+ * @return 一致时 true
+ */
+internal fun persistedMatches(expected: VaultData, back: VaultData?): Boolean =
+    back != null &&
+    back.master_key == expected.master_key &&
+    back.device?.device_id == expected.device?.device_id

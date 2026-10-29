@@ -3,12 +3,22 @@ package dev.xiaoqiong.vkey.sync
 import dev.xiaoqiong.vkey.crypto.Crypto
 import dev.xiaoqiong.vkey.net.VkeyApi
 import dev.xiaoqiong.vkey.vault.DeviceConfig
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /** 一次同步配置（用 master_key 登录 / 用配对码领取）的结果。 */
 data class SyncResult(
     /** 可落盘的设备材料。 */
     val config: DeviceConfig,
     /** 本次确认的 master_key（Base32 52 字符），用于校正本地库。 */
+    val masterKeyBase32: String,
+)
+
+/** 用开户码接入（多用户实例注册）的结果。 */
+data class EnrollResult(
+    /** 可落盘的设备材料。 */
+    val config: DeviceConfig,
+    /** 本地新生成的 master_key（Base32 52 字符），即恢复码。 */
     val masterKeyBase32: String,
 )
 
@@ -25,8 +35,8 @@ data class GeneratedPairCode(
 /**
  * 同步配置与设备配对（M3.2 前半）。
  *
- * 所有方法都是阻塞调用（内部走 OkHttp 同步接口），调用方必须放到
- * `Dispatchers.IO` 上执行。
+ * 除 [enroll] 外都是阻塞调用（内部走 OkHttp 同步接口），调用方必须放到
+ * `Dispatchers.IO` 上执行；[enroll] 已自带 IO 切换。
  *
  * 与 Linux 客户端保持逐字节一致：
  * - 登录：`verifier = HKDF(master_key, "vkey-verifier", username)`；
@@ -145,6 +155,60 @@ object SyncManager {
                 username = username,
                 seed = Crypto.b64urlEncode(seed),
                 token = claim.token,
+            ),
+            masterKeyBase32 = Crypto.base32Encode(masterKey),
+        )
+    }
+
+    /**
+     * 用一次性开户码接入新账号（`POST /api/v1/auth/enroll`）。
+     *
+     * 零知识边界：master_key 在本地 `SecureRandom` 生成，服务端只收到
+     * `verifier = HKDF(master_key, "vkey-verifier", username)`；成功后本机
+     * 以该 master_key 作为账号密钥。
+     *
+     * @param serverUrl 服务地址
+     * @param code 开户码（容忍空格与小写，须为 `ENROLL-XXXX-XXXX`）
+     * @param username 用户名（必须与管理员开户时绑定的用户名一致）
+     * @param deviceName 设备名（超长截断，空白退化为 `android`）
+     * @param existingSeedB64 已有 Ed25519 种子（base64url）；复用可避免重复登记新设备
+     * @return 设备材料与本地新生成的 master_key
+     * @throws dev.xiaoqiong.vkey.net.ApiException 开户码无效/过期、用户名占用、设备配额满等
+     * @throws IllegalArgumentException 开户码格式非法或用户名为空
+     */
+    suspend fun enroll(
+        serverUrl: String,
+        code: String,
+        username: String,
+        deviceName: String,
+        existingSeedB64: String? = null,
+    ): EnrollResult = withContext(Dispatchers.IO) {
+        val canonical = Links.parseEnrollCode(code)
+            ?: throw IllegalArgumentException("illegal enroll code format (expected ENROLL-XXXX-XXXX)")
+        val account = username.trim()
+        require(account.isNotEmpty()) { "username must not be blank" }
+        val api = VkeyApi(serverUrl)
+        val name = sanitizeDeviceName(deviceName)
+        val seed = existingSeedB64?.let(::decodeSeed) ?: Crypto.random(Crypto.ED25519_SEED_LEN)
+        val masterKey = Crypto.random(Crypto.KEY_LEN)
+
+        val response = api.enroll(
+            code = canonical,
+            username = account,
+            verifier = Crypto.verifier(masterKey, account),
+            deviceName = name,
+            platform = PLATFORM,
+            pubkey = Crypto.ed25519PublicKey(seed),
+        )
+        EnrollResult(
+            config = DeviceConfig(
+                server_url = api.baseUrl.toString().trimEnd('/'),
+                device_id = response.deviceId,
+                device_name = name,
+                // 服务端回显的绑定用户名与本地一致才可能成功；缺失时退化成本地输入
+                username = response.username.ifBlank { account },
+                seed = Crypto.b64urlEncode(seed),
+                token = response.token,
             ),
             masterKeyBase32 = Crypto.base32Encode(masterKey),
         )

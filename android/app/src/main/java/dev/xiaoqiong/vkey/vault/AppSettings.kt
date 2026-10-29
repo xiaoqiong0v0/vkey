@@ -73,7 +73,12 @@ class AppSettings(context: Context) {
         get() = sp.getBoolean(KEY_AUTO_LOCK, false)
         set(value) = sp.edit().putBoolean(KEY_AUTO_LOCK, value).apply()
 
-    /** 同步服务地址（如 `https://vkey.xiaoqiong0v0.cn`）。 */
+    /**
+     * 同步服务地址（如 `https://vkey.example.com`）。
+     *
+     * **默认为空串 = 未配置**：开源发行版不内置任何生产域名，
+     * 调用方必须自行处理空值（提示「未配置服务端」，不得据此发起请求）。
+     */
     var serverUrl: String
         get() = sp.getString(KEY_SERVER_URL, DEFAULT_SERVER_URL) ?: DEFAULT_SERVER_URL
         set(value) = sp.edit().putString(KEY_SERVER_URL, value.trim()).apply()
@@ -93,6 +98,7 @@ class AppSettings(context: Context) {
         const val KEY_SERVER_URL = "server_url"
         const val KEY_THEME_MODE = "theme_mode"
         const val KEY_LANGUAGE = "language"
-        const val DEFAULT_SERVER_URL = "https://vkey.xiaoqiong0v0.cn"
+        /** 默认服务地址：空串（未配置）。发行版不内置任何生产域名。 */
+        const val DEFAULT_SERVER_URL = ""
     }
 }

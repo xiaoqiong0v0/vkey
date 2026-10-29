@@ -16,6 +16,9 @@ sealed interface ScanLink {
 
     /** 配对码链接或裸配对码。 */
     data class PairCode(val code: String) : ScanLink
+
+    /** 开户码文本（`ENROLL-XXXX-XXXX`，服务端管理员签发）。 */
+    data class EnrollCode(val code: String) : ScanLink
 }
 
 /**
@@ -36,6 +39,12 @@ object Links {
     /** 配对码 / master_key 均为 32B，base32 无填充后固定 52 字符。 */
     private const val KEY_BYTES = 32
     private const val KEY_CHARS = 52
+
+    /**
+     * 开户码格式（与服务端 `policy.EnrollCodePrefix/GroupSize/Groups` 一致）：
+     * `ENROLL-` 前缀 + 2 组各 4 位字母数字；`-` 属格式一部分，比较前只去空白、转大写。
+     */
+    private val ENROLL_CODE_PATTERN = Regex("^ENROLL-[A-Z0-9]{4}-[A-Z0-9]{4}$")
 
     private const val PARAM_SERVER = "server"
     private const val PARAM_CODE = "code"
@@ -90,7 +99,23 @@ object Links {
     }
 
     /**
-     * 按「配置深链 → 配对码深链 → 裸配对码」的顺序识别扫码内容。
+     * 解析开户码文本（`ENROLL-XXXX-XXXX`）。
+     *
+     * 与服务端 `NormalizeEnrollCode` 同规则：去空白、转大写（组内 `-` 保留）。
+     * 容忍用户粘贴带空格或小写的码。
+     *
+     * @param raw 用户输入或扫码原文
+     * @return 规范形式 `ENROLL-XXXX-XXXX`；格式不符时返回 null
+     */
+    fun parseEnrollCode(raw: String): String? {
+        val text = raw.trim()
+        if (text.isEmpty() || text.contains("://")) return null
+        val normalized = text.filterNot { it.isWhitespace() }.uppercase()
+        return normalized.takeIf { ENROLL_CODE_PATTERN.matches(it) }
+    }
+
+    /**
+     * 按「配置深链 → 配对码深链 → 开户码 → 裸配对码」的顺序识别扫码内容。
      *
      * @param raw 扫码内容原文
      * @return 识别结果；都不是时返回 null（调用方再尝试 `otpauth://`）
@@ -98,6 +123,7 @@ object Links {
     fun classify(raw: String): ScanLink? {
         parseServerConfig(raw)?.let { return ScanLink.ServerConfig(it) }
         parsePairCodeLink(raw)?.let { return ScanLink.PairCode(it) }
+        parseEnrollCode(raw)?.let { return ScanLink.EnrollCode(it) }
         parseBarePairCode(raw)?.let { return ScanLink.PairCode(it) }
         return null
     }

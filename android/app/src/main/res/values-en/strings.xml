@@ -101,7 +101,7 @@
 
     <!-- ============ Sync settings ============ -->
     <string name="status_not_configured">Not configured</string>
-    <string name="status_logged_in">Signed in</string>
+    <string name="status_logged_in">Signed in: %1$s</string>
     <string name="sync_configure_hint">Enter a master_key or pairing code to finish setup, or scan the server QR code to prefill the address.</string>
     <string name="label_device">Device: %1$s</string>
     <string name="label_server">Server: %1$s</string>
@@ -152,8 +152,31 @@
     <string name="info_server_set">Server address set: %1$s</string>
     <string name="info_pair_code_detected">Pairing code detected. Tap Claim and finish setup to continue</string>
 
+    <!-- ============ Enrollment code ============ -->
+    <string name="section_enroll">Connect with an enrollment code</string>
+    <string name="enroll_desc">Enter a one-time enrollment code issued by the admin: the master key is generated and kept on this device; the server only sees its verifier. On success the account is bound to this username.</string>
+    <string name="label_enroll_code">Enrollment code (like ENROLL-XXXX-XXXX)</string>
+    <string name="label_enroll_username">Username (must match the code binding)</string>
+    <string name="action_enroll">Connect</string>
+    <string name="busy_enrolling">Connecting with enrollment code…</string>
+    <string name="info_enrolled">Connected: %1$s</string>
+    <string name="info_enroll_code_detected">Enrollment code detected. Tap Connect to continue</string>
+    <string name="err_enroll_code_format">Invalid enrollment code: expected ENROLL- prefix with two 4-character groups (case and spaces ignored)</string>
+    <string name="err_enroll_username_empty">Enter the username (it must match the one the admin opened the account with)</string>
+    <string name="dialog_enroll_overwrite_title">Connect a new account?</string>
+    <string name="dialog_enroll_overwrite_text">Connecting replaces the current sync settings; existing local entries will be pushed to the new account.</string>
+    <string name="enroll_recovery_title">Recovery code (shown only once)</string>
+    <string name="enroll_recovery_hint">This is the new account master key (52 characters). Write it down and store it somewhere safe now; without it no device can recover your data.</string>
+    <string name="enroll_saved_check">I have written down the recovery code</string>
+    <string name="action_enroll_done">Done</string>
+    <string name="action_enroll_cancel">Not yet</string>
+    <string name="info_enroll_abandoned">Enrollment not completed; nothing was saved. Enter the enrollment code again to retry</string>
+
     <!-- ============ Error text (describeFailure) ============ -->
-    <string name="err_enter_server_url">Enter the server address first</string>
+    <string name="err_enter_server_url">No server configured: enter the server address first</string>
+    <string name="err_vault_save_failed">Local save failed (config not written; retry): %1$s</string>
+    <string name="placeholder_server_url">https://vkey.example.com</string>
+    <string name="err_server_url_scheme">Server URL must start with http:// or https://</string>
     <string name="err_master_key_format">master_key must be 52 base32 characters (spaces or dashes allowed)</string>
     <string name="err_pair_code_format">Pairing code must be 52 base32 characters (spaces or dashes allowed)</string>
     <string name="err_network">Network unreachable: %1$s</string>
@@ -168,6 +191,14 @@
     <string name="err_not_configured">Sync is not configured on this device</string>
     <string name="err_stale_write">This credential changed on another device. Refresh and retry</string>
     <string name="err_server_rejected">Server rejected the write (%1$s)</string>
+
+    <!-- ============ Enrollment errors (enrollErrorRes) ============ -->
+    <string name="err_enroll_invalid_code">Enrollment code invalid (missing, used, or revoked)</string>
+    <string name="err_enroll_code_expired">Enrollment code expired; ask the admin to issue a new one</string>
+    <string name="err_enroll_username_taken">Username already taken; check the username bound to the code</string>
+    <string name="err_enroll_invalid_verifier">Verifier rejected by the server</string>
+    <string name="err_enroll_quota_devices">This account reached its device quota</string>
+    <string name="err_enroll_disabled">Enrollment is disabled on the server (single mode)</string>
 
     <!-- ============ Scanner ============ -->
     <string name="scan_waiting_permission">Waiting for camera permission…</string>
@@ -189,6 +220,7 @@
     <string name="scan_err_empty">Content is empty</string>
     <string name="scan_err_config_qr_wrong_page">This is a sync QR code; scan it under Settings → Sync</string>
     <string name="scan_err_pair_code_wrong_page">This is a device pairing code; use it under Settings → Sync</string>
+    <string name="scan_err_enroll_code_wrong_page">This is an enrollment code; use it under Settings → Connect with an enrollment code</string>
     <string name="scan_err_not_otpauth">QR code is not a valid otpauth:// link</string>
     <string name="scan_err_not_config_qr">Not a sync or pairing QR code</string>
 

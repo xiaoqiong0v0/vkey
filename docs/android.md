@@ -1384,3 +1384,13 @@ ARTIFACTS="${ARTIFACTS:-$REMOTE_DIR/data/artifacts}"   # systemd WorkingDirector
 - API 26–29 无强生物识别时降级为「设备凭据 + 正数有效期」弱模式，设置页必须标注（§2.3）；
 - QR 载荷采用 §5.2（`fp` 为可选，仅自签模式）；
 - 里程碑 3 个（M3.1 约 1.5 周 / M3.2 约 2 周 / M3.3 约 1 周，按 1 人估算）。
+
+### 7.6 多用户开户接入（客户端）
+
+- 入口仅在「设置」页的「用开户码接入」卡片；**启动不提示、不做引导页**（使用说明见 README）
+- 手动输入开户码为主路径，扫码只是快捷方式（扫到 `ENROLL-` 文本回填）
+- 流程：校验码格式 → 本地生成 32B `master_key` → `verifier = HKDF(master_key, username)` → 生成设备 Ed25519 密钥 →
+  `POST /api/v1/auth/enroll` → **展示 52 位恢复码并要求勾选确认** → 写盘并读回校验 → 显示「已登录：<username>」
+- 服务端只保存 `verifier`，**永不接触 `master_key`**
+- 写盘采用 `VaultStore.writeAndVerify`：写入后读回比对 `master_key` 与 `device_id`，失败显式报错（不静默）
+- 默认服务端地址为空：开源仓库不带任何作者域名，首次进入需用户自行填写（校验必须 `http://` 或 `https://` 开头）

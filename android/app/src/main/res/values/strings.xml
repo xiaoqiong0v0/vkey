@@ -179,9 +179,9 @@
     <string name="action_clear_pairing">解除账户绑定（保留本地数据）</string>
     <!-- ============ 同步配置：接入方式（三选一，只渲染当前方式的表单） ============ -->
     <string name="connect_section_title">接入方式</string>
-    <string name="connect_mode_master_key">已有 master_key / 恢复码（52 位）</string>
+    <string name="connect_mode_master_key">已有 master_key / 恢复码</string>
     <string name="connect_mode_master_key_desc">已在其它设备用过：输入恢复码即可</string>
-    <string name="connect_mode_pair">配对码（在已登录设备上生成）</string>
+    <string name="connect_mode_pair">配对码</string>
     <string name="connect_mode_pair_desc">在已登录设备上生成一次性配对码</string>
     <string name="connect_mode_enroll">开户码（管理员发放）</string>
     <string name="connect_mode_enroll_desc">管理员发放的 ENROLL-XXXX-XXXX</string>
@@ -206,8 +206,17 @@
     <string name="busy_syncing_items">正在同步条目…</string>
     <string name="info_sync_done">同步完成</string>
     <string name="busy_generating_pair_code">正在生成配对码…</string>
-    <string name="info_server_set">服务器地址已设置：%1$s</string>
     <string name="info_pair_code_detected">已识别配对码，点「领取并完成配置」继续</string>
+    <!-- ============ 服务端地址：紧凑行 + 编辑对话框（保存前探测连通性） ============ -->
+    <string name="server_address_label">服务器</string>
+    <string name="server_url_not_set">未设置</string>
+    <string name="action_modify_address">修改</string>
+    <string name="busy_connecting_server">正在连接…</string>
+    <string name="info_server_updated_relogin">服务器已更新，请重新登录或重新配对</string>
+    <string name="err_server_unreachable_timeout">无法连接：连接超时（5 秒）</string>
+    <string name="err_server_unreachable_dns">无法连接：域名无法解析</string>
+    <string name="err_server_unreachable_status">无法连接：服务器返回 HTTP %1$d</string>
+    <string name="err_server_unreachable_network">无法连接：%1$s</string>
 
     <!-- ============ 开户码接入 ============ -->
     <string name="section_enroll">用开户码接入</string>

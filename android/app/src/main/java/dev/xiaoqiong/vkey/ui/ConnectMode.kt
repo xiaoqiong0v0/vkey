@@ -3,9 +3,9 @@ package dev.xiaoqiong.vkey.ui
 import dev.xiaoqiong.vkey.R
 
 /**
- * 账号页「未配置」时的接入方式（三选一，互斥）。
+ * 账号页「未配置」时的接入方式（三选一，互斥），用下拉框选择。
  *
- * 顺序即卡片顺序，也是「默认选中」的来源（[ConnectFormState.DEFAULT_MODE]）。
+ * 顺序即下拉框选项顺序，也是「默认选中」的来源（[ConnectFormState.DEFAULT_MODE]）。
  */
 internal enum class ConnectMode {
     /** 已有 master_key / 恢复码（52 位）：在其它设备用过，输入恢复码即可。 */
@@ -94,14 +94,14 @@ internal data class ConnectFormState(
     }
 }
 
-/** 接入方式 → 单选卡片标题。 */
+/** 接入方式 → 下拉框里的选项标题。 */
 internal fun ConnectMode.titleRes(): Int = when (this) {
     ConnectMode.MASTER_KEY -> R.string.connect_mode_master_key
     ConnectMode.PAIR -> R.string.connect_mode_pair
     ConnectMode.ENROLL -> R.string.connect_mode_enroll
 }
 
-/** 接入方式 → 单选卡片说明。 */
+/** 接入方式 → 下拉框里的选项说明（副标题）。 */
 internal fun ConnectMode.descRes(): Int = when (this) {
     ConnectMode.MASTER_KEY -> R.string.connect_mode_master_key_desc
     ConnectMode.PAIR -> R.string.connect_mode_pair_desc

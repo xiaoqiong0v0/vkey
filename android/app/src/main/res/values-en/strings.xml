@@ -177,9 +177,9 @@
     <string name="action_clear_pairing">Unlink account (keep local data)</string>
     <!-- Connect methods (pick one; only the selected method renders its form) -->
     <string name="connect_section_title">How to connect</string>
-    <string name="connect_mode_master_key">I have a master_key / recovery code (52 chars)</string>
+    <string name="connect_mode_master_key">I have a master_key / recovery code</string>
     <string name="connect_mode_master_key_desc">Used on another device already: just enter the recovery code</string>
-    <string name="connect_mode_pair">Pairing code (generated on a signed-in device)</string>
+    <string name="connect_mode_pair">Pairing code</string>
     <string name="connect_mode_pair_desc">Generate a one-time pairing code on a signed-in device</string>
     <string name="connect_mode_enroll">Enrollment code (issued by an admin)</string>
     <string name="connect_mode_enroll_desc">An ENROLL-XXXX-XXXX code issued by an admin</string>
@@ -204,8 +204,17 @@
     <string name="busy_syncing_items">Syncing items…</string>
     <string name="info_sync_done">Sync complete</string>
     <string name="busy_generating_pair_code">Generating pairing code…</string>
-    <string name="info_server_set">Server address set: %1$s</string>
     <string name="info_pair_code_detected">Pairing code detected. Tap Claim and finish setup to continue</string>
+    <!-- ============ Server address: compact row + edit dialog (connectivity probe before save) ============ -->
+    <string name="server_address_label">Server</string>
+    <string name="server_url_not_set">Not set</string>
+    <string name="action_modify_address">Edit</string>
+    <string name="busy_connecting_server">Connecting…</string>
+    <string name="info_server_updated_relogin">Server updated. Sign in or pair again.</string>
+    <string name="err_server_unreachable_timeout">Cannot connect: timed out (5s)</string>
+    <string name="err_server_unreachable_dns">Cannot connect: cannot resolve host</string>
+    <string name="err_server_unreachable_status">Cannot connect: server returned HTTP %1$d</string>
+    <string name="err_server_unreachable_network">Cannot connect: %1$s</string>
 
     <!-- ============ Enrollment code ============ -->
     <string name="section_enroll">Connect with an enrollment code</string>

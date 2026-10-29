@@ -31,11 +31,15 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Card
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
@@ -95,7 +99,7 @@ private enum class ConfirmKind { NONE, CLEAR_DEVICE, ENROLL }
  * （进程内有效，进程被杀后回到 [ACCOUNT]）。
  */
 enum class SettingsTab {
-    /** 账号：未配置 → 服务端地址 + 三选一接入方式（当前方式只渲染一个表单）；已配置 → 状态卡、同步、配对、设备管理。 */
+    /** 账号：服务端地址行（两种状态都有）+ 未配置时的接入方式下拉框（只渲染当前方式的表单）/ 已配置时的状态卡、同步、配对、设备管理。 */
     ACCOUNT,
 
     /** 设置：本机设备名、回到前台时重新解锁、明暗模式、语言、导入 / 导出 2FA 配置。 */
@@ -120,9 +124,12 @@ enum class SettingsTab {
  *
  * 所有网络与密码学操作都在 IO 线程执行，结果通过 [onSaved] 落盘。
  *
- * 账号分类内的区块可见性按「是否已配置」切换：`device == null` 才显示「服务端地址」
- * 与「接入方式（master_key / 配对码 / 开户码 三选一，只渲染当前方式的表单）」，
- * 已配置时隐藏（换服务器 / 换账号请先解除绑定），解除绑定后随状态变化立即恢复。
+ * 账号分类内「服务端地址」是一行紧凑条目（点击 / 「修改」进编辑对话框），两种状态都显示：
+ * 保存前必须探测 `GET {url}/api/v1/policy`（5s / 2xx），失败不落盘；
+ * 已配置且地址确实变了则清除本机设备绑定（token 属于旧服务器），本地条目与 master_key 保留。
+ *
+ * 未配置（`device == null`）时其下是「接入方式」下拉框（master_key / 配对码 / 开户码 三选一，
+ * 只渲染当前方式的表单）；已配置时该块隐藏，解除绑定后随状态变化立即恢复。
  *
  * @param masterKey 当前库的 master_key（base32），用于生成配对码与校正账号密钥
  * @param device 已保存的设备材料；null 表示未配置
@@ -205,6 +212,13 @@ fun SyncScreen(
     var remainingSeconds by remember { mutableLongStateOf(0L) }
     var confirm by remember { mutableStateOf(ConfirmKind.NONE) }
     var syncStats by remember { mutableStateOf<SyncStats?>(null) }
+    // 服务端地址编辑对话框：草稿值 / 探测中 / 错误文案。成功探测后才落盘，失败行值不变
+    var showAddressDialog by remember { mutableStateOf(false) }
+    var addressDraft by remember { mutableStateOf("") }
+    var addressBusy by remember { mutableStateOf(false) }
+    var addressError by remember { mutableStateOf<String?>(null) }
+    // 「扫码」是否从地址对话框发起：回来后重新打开对话框并填入结果
+    var scanForAddress by remember { mutableStateOf(false) }
 
     // 深链/预填可能在页面已打开时到达（热启动 onNewIntent，或扫码回调）：
     // 参数变化时重新应用一次，保证「方式自动切到对应项并预填」；
@@ -354,6 +368,50 @@ fun SyncScreen(
         }
     }
 
+    /**
+     * 保存服务端地址（对话框内）：格式校验 → 连通性探测（5s / 2xx）→ 成功才落盘。
+     *
+     * 失败时只更新对话框内的错误文案，行值与 AppSettings 都保持原值；
+     * 已配置且地址确实变了则清本机设备绑定，提示重新登录 / 重新配对。
+     */
+    val doSaveAddress: () -> Unit = {
+        val address = addressDraft.trim()
+        when {
+            addressBusy -> Unit
+            address.isEmpty() -> addressError = context.getString(R.string.err_enter_server_url)
+            !isValidServerUrl(address) -> addressError = context.getString(R.string.err_server_url_scheme)
+            else -> {
+                addressError = null
+                addressBusy = true
+                scope.launch {
+                    try {
+                        when (val probe = probeServerAddress(address)) {
+                            ServerProbe.Reachable -> {
+                                val rebind = requiresDeviceRebind(device?.server_url, address)
+                                url = address
+                                onServerUrlChange(address)
+                                showAddressDialog = false
+                                addressDraft = ""
+                                if (rebind) {
+                                    // token 属于旧服务器：清绑定（本地条目与 master_key 保留）
+                                    generated = null
+                                    onClearDevice()
+                                    form = ConnectFormState()
+                                    info = context.getString(R.string.info_server_updated_relogin)
+                                } else {
+                                    info = context.getString(R.string.info_server_saved)
+                                }
+                            }
+                            is ServerProbe.Unreachable -> addressError = describeProbeFailure(context, probe)
+                        }
+                    } finally {
+                        addressBusy = false
+                    }
+                }
+            }
+        }
+    }
+
     /** 生成配对码（需要已登录 + 已解锁）。 */
     val doGenerate: () -> Unit = {
         val cfg = device
@@ -380,7 +438,7 @@ fun SyncScreen(
     }
 
     val pairedServer = device?.server_url
-    val serverChanged = pairedServer != null && normalizeUrl(url) != normalizeUrl(pairedServer)
+    val serverChanged = pairedServer != null && normalizeServerUrl(url) != normalizeServerUrl(pairedServer)
 
     // 页面级切换（表单 ↔ 扫码）：与顶层页面共用同一套转场，进入扫码走前进方向，关闭走返回方向
     AnimatedContent(
@@ -399,27 +457,38 @@ fun SyncScreen(
                 mode = scanMode,
                 onResult = null,
                 onConfigLink = { server ->
+                    // 扫码只填值、不落盘：地址必须在「保存」时探测连通性；
+                    // 从地址对话框进来的扫码回到对话框，从表单进来的直接打开对话框确认保存
                     url = server
-                    onServerUrlChange(server)
+                    addressDraft = server
+                    addressError = null
+                    scanForAddress = false
                     showScan = false
-                    info = context.getString(R.string.info_server_set, server)
+                    showAddressDialog = true
                 },
                 onPairCode = { code ->
                     form = form.withPairCode(code)
                     showScan = false
+                    scanForAddress = false
                     info = context.getString(R.string.info_pair_code_detected)
                 },
                 onEnrollCode = { target ->
                     form = form.withEnrollCode(target.code, target.username)
-                    // 深链 / `/join` 链接自带服务端地址时一并填好并持久化（裸码则保持现有地址）
-                    target.serverUrl?.let { server ->
-                        url = server
-                        onServerUrlChange(server)
-                    }
+                    // 开户码 / `/join` 链接自带服务端地址时同步到地址行；落盘留到接入成功
+                    // （接入请求本身就是连通性验证；裸码则保持现有地址）
+                    target.serverUrl?.let { server -> url = server }
                     showScan = false
+                    scanForAddress = false
                     info = context.getString(R.string.info_enroll_code_detected)
                 },
-                onCancel = { showScan = false },
+                onCancel = {
+                    showScan = false
+                    // 从地址对话框扫码后取消：回到对话框继续编辑原值
+                    if (scanForAddress) {
+                        scanForAddress = false
+                        showAddressDialog = true
+                    }
+                },
             )
         } else {
             // ---------------- 分类导航：先选类型，再列该类型的项 ----------------
@@ -506,6 +575,17 @@ fun SyncScreen(
                             when (group) {
                                 // ---------------- 账号 ----------------
                                 SettingsTab.ACCOUNT -> {
+                                    // ---------- 服务端地址（两种状态都显示，点击进编辑对话框） ----------
+                                    ServerAddressRow(
+                                        url = url,
+                                        enabled = busy == null && !addressBusy,
+                                        onEdit = {
+                                            addressDraft = url.trim()
+                                            addressError = null
+                                            showAddressDialog = true
+                                        },
+                                    )
+
                                     if (device != null) {
                                         // ---------- 已配置：状态卡 ----------
                                         Card(Modifier.fillMaxWidth()) {
@@ -603,7 +683,7 @@ fun SyncScreen(
                                                     Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
                                                         QrCodeImage(
                                                             content = "vkey://pair?code=${pairCode.codeText}" +
-                                                                "&server=${normalizeUrl(url).ifBlank { device.server_url }}",
+                                                                "&server=${normalizeServerUrl(url).ifBlank { device.server_url }}",
                                                             size = 220.dp,
                                                         )
                                                     }
@@ -673,9 +753,9 @@ fun SyncScreen(
                                         }
                                     }
 
-                                    // ---------- 未配置：服务端地址 + 三选一接入方式 ----------
-                                    // 地址是公共前置（三种方式都要用），方式卡片互斥、只渲染当前方式的表单；
-                                    // 已配置后整块隐藏（换服务器 / 换账号请先解除绑定），解除绑定后随状态立即恢复。
+                                    // ---------- 未配置：接入方式下拉框 + 当前方式的表单 ----------
+                                    // 地址行在上面（已配置时也可改）；这里只放互斥的接入方式，
+                                    // 切换后只渲染该方式的表单。已配置后整块隐藏，解除绑定后随状态立即恢复。
                                     AnimatedVisibility(
                                         visible = device == null,
                                         enter = expandVertically(
@@ -691,87 +771,23 @@ fun SyncScreen(
                                             modifier = Modifier.fillMaxWidth(),
                                             verticalArrangement = Arrangement.spacedBy(12.dp),
                                         ) {
-                                            // ---------- 服务端地址（公共前置） ----------
+                                            // ---------- 接入方式（下拉框，三选一） ----------
                                             Card(Modifier.fillMaxWidth()) {
                                                 Column(Modifier.padding(16.dp)) {
-                                                    Text(
-                                                        stringResource(R.string.section_server_address),
-                                                        style = MaterialTheme.typography.titleMedium,
-                                                    )
-                                                    Spacer(Modifier.height(8.dp))
-                                                    OutlinedTextField(
-                                                        value = url,
-                                                        onValueChange = { url = it },
-                                                        label = { Text(stringResource(R.string.label_sync_server_url)) },
-                                                        // 未配置时只给占位示例，不预填任何真实域名
-                                                        placeholder = {
-                                                            if (url.isEmpty()) {
-                                                                Text(stringResource(R.string.placeholder_server_url))
+                                                    ConnectModeDropdown(
+                                                        mode = form.mode,
+                                                        onSelect = { option ->
+                                                            if (form.mode != option) {
+                                                                form = form.select(option)
+                                                                info = context.getString(
+                                                                    R.string.info_connect_mode_switched,
+                                                                    context.getString(option.titleRes()),
+                                                                )
                                                             }
                                                         },
-                                                        singleLine = true,
-                                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                                                        modifier = Modifier.fillMaxWidth(),
-                                                    )
-                                                    Spacer(Modifier.height(8.dp))
-                                                    Row(
-                                                        modifier = Modifier.fillMaxWidth(),
-                                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                                        verticalAlignment = Alignment.CenterVertically,
-                                                    ) {
-                                                        Button(
-                                                            onClick = {
-                                                                if (requireValidAddress()) {
-                                                                    onServerUrlChange(url.trim())
-                                                                    info = context.getString(R.string.info_server_saved)
-                                                                }
-                                                            },
-                                                            enabled = busy == null && url.trim().isNotEmpty(),
-                                                            modifier = Modifier.weight(1f),
-                                                        ) { Text(stringResource(R.string.action_save_address)) }
-                                                        Button(
-                                                            onClick = {
-                                                                scanMode = ScanMode.CONFIG_LINK
-                                                                showScan = true
-                                                            },
-                                                            enabled = busy == null,
-                                                            modifier = Modifier.weight(1f),
-                                                        ) { Text(stringResource(R.string.action_scan)) }
-                                                    }
-                                                    Text(
-                                                        stringResource(R.string.sync_scan_hint),
-                                                        style = MaterialTheme.typography.bodySmall,
-                                                        modifier = Modifier.padding(top = 4.dp),
                                                     )
                                                 }
                                             }
-
-                                            // ---------- 接入方式（单选卡片，三选一） ----------
-                                            Card(Modifier.fillMaxWidth()) {
-                                                Column(Modifier.padding(16.dp)) {
-                                                    Text(
-                                                        stringResource(R.string.connect_section_title),
-                                                        style = MaterialTheme.typography.titleMedium,
-                                                    )
-                                                    Spacer(Modifier.height(4.dp))
-                                                    ConnectMode.entries.forEach { option ->
-                                                        ConnectModeOption(
-                                                            mode = option,
-                                                            selected = form.mode == option,
-                                                            onSelect = {
-                                                                if (form.mode != option) {
-                                                                    form = form.select(option)
-                                                                    info = context.getString(
-                                                                        R.string.info_connect_mode_switched,
-                                                                        context.getString(option.titleRes()),
-                                                                    )
-                                                                }
-                                                            },
-                                                        )
-                                                    }
-                                                }
-                                            }
-
                                             // ---------- 当前方式的表单（一次只渲染一个） ----------
                                             when (form.mode) {
                                                 ConnectMode.MASTER_KEY -> Card(Modifier.fillMaxWidth()) {
@@ -1061,6 +1077,83 @@ fun SyncScreen(
             },
         )
     }
+
+    // 服务端地址编辑：保存前必须探测 `GET {url}/api/v1/policy`（5s / 2xx），失败不落盘
+    if (showAddressDialog) {
+        /** 关闭对话框（探测中不允许关闭，避免结果回来时无处展示）。 */
+        val closeAddressDialog: () -> Unit = {
+            if (!addressBusy) {
+                showAddressDialog = false
+                addressError = null
+            }
+        }
+        AlertDialog(
+            onDismissRequest = closeAddressDialog,
+            title = { Text(stringResource(R.string.section_server_address)) },
+            text = {
+                Column {
+                    OutlinedTextField(
+                        value = addressDraft,
+                        onValueChange = {
+                            addressDraft = it
+                            addressError = null
+                        },
+                        label = { Text(stringResource(R.string.label_sync_server_url)) },
+                        placeholder = {
+                            if (addressDraft.isEmpty()) {
+                                Text(stringResource(R.string.placeholder_server_url))
+                            }
+                        },
+                        singleLine = true,
+                        enabled = !addressBusy,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    addressError?.let {
+                        Text(
+                            text = it,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.padding(top = 4.dp),
+                        )
+                    }
+                    if (addressBusy) {
+                        Spacer(Modifier.height(8.dp))
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        Text(
+                            stringResource(R.string.busy_connecting_server),
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.padding(top = 4.dp),
+                        )
+                    } else {
+                        Text(
+                            stringResource(R.string.sync_scan_hint),
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.padding(top = 4.dp),
+                        )
+                        TextButton(onClick = {
+                            // 关对话框去扫码（扫码页会覆盖整页），结果回来再打开并填值
+                            scanForAddress = true
+                            scanMode = ScanMode.CONFIG_LINK
+                            addressError = null
+                            showAddressDialog = false
+                            showScan = true
+                        }) { Text(stringResource(R.string.action_scan)) }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(onClick = doSaveAddress, enabled = !addressBusy) {
+                    Text(stringResource(R.string.action_save_address))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = closeAddressDialog, enabled = !addressBusy) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            },
+        )
+    }
 }
 
 /**
@@ -1077,30 +1170,87 @@ internal fun isValidServerUrl(raw: String): Boolean {
 }
 
 /**
- * 接入方式单选卡片：整行可点（RadioButton 只做视觉指示），标题 + 一行说明。
+ * 接入方式下拉框：收起时一行显示当前选择（标题 + 说明），展开后每项带一行短说明。
  *
- * @param mode 本行对应的接入方式
- * @param selected 是否选中
- * @param onSelect 点击回调（切换方式并清空输入由调用方负责）
+ * @param mode 当前选中的接入方式
+ * @param onSelect 选择回调（切换方式并清空输入由调用方负责）
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ConnectModeDropdown(mode: ConnectMode, onSelect: (ConnectMode) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    ExposedDropdownMenuBox(
+        expanded = expanded,
+        onExpandedChange = { expanded = it },
+    ) {
+        OutlinedTextField(
+            value = stringResource(mode.titleRes()),
+            onValueChange = {},
+            readOnly = true,
+            singleLine = true,
+            label = { Text(stringResource(R.string.connect_section_title)) },
+            supportingText = { Text(stringResource(mode.descRes())) },
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+            modifier = Modifier
+                .fillMaxWidth()
+                .menuAnchor(MenuAnchorType.PrimaryNotEditable),
+        )
+        ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            ConnectMode.entries.forEach { option ->
+                DropdownMenuItem(
+                    text = {
+                        Column {
+                            Text(stringResource(option.titleRes()), style = MaterialTheme.typography.bodyLarge)
+                            Text(
+                                stringResource(option.descRes()),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    },
+                    onClick = {
+                        expanded = false
+                        onSelect(option)
+                    },
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 服务端地址行：一行显示当前地址（未设置为占位），整行可点 / 右侧「修改」进编辑对话框。
+ *
+ * @param url 当前地址（空串 = 未配置）
+ * @param enabled false 时不可点（其它任务进行中）
+ * @param onEdit 进入编辑对话框
  */
 @Composable
-private fun ConnectModeOption(mode: ConnectMode, selected: Boolean, onSelect: () -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .selectable(selected = selected, role = Role.RadioButton, onClick = onSelect)
-            .padding(vertical = 8.dp),
-        verticalAlignment = Alignment.Top,
-    ) {
-        RadioButton(selected = selected, onClick = null)
-        Spacer(Modifier.width(8.dp))
-        Column(Modifier.weight(1f)) {
-            Text(stringResource(mode.titleRes()), style = MaterialTheme.typography.bodyLarge)
-            Text(
-                stringResource(mode.descRes()),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+private fun ServerAddressRow(url: String, enabled: Boolean, onEdit: () -> Unit) {
+    Card(Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(enabled = enabled, onClick = onEdit)
+                .padding(start = 16.dp, end = 8.dp, top = 12.dp, bottom = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    stringResource(R.string.server_address_label),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    text = url.trim().ifEmpty { stringResource(R.string.server_url_not_set) },
+                    style = MaterialTheme.typography.bodyLarge,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            TextButton(onClick = onEdit, enabled = enabled) {
+                Text(stringResource(R.string.action_modify_address))
+            }
         }
     }
 }
@@ -1348,9 +1498,6 @@ private fun defaultDeviceName(): String {
     val model = Build.MODEL.orEmpty().trim()
     return SyncManager.sanitizeDeviceName(if (model.isEmpty()) "android" else "Android $model")
 }
-
-/** 去掉尾部斜杠用于比较服务器地址。 */
-private fun normalizeUrl(url: String): String = url.trim().trimEnd('/')
 
 /** 把剩余秒数格式化为 `mm:ss`。 */
 private fun formatCountdown(seconds: Long): String {

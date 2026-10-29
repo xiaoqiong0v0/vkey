@@ -84,7 +84,7 @@ private val FRAME_MAX = 320.dp
  * 停留在扫码页并给出该 mode 对应的错误提示，绝不越权处理。
  */
 enum class ScanMode {
-    /** 设置 → 「服务端地址」卡片：只接受 `http(s)://…` 或 `vkey://config?server=…`。 */
+    /** 设置 → 服务端地址行 / 编辑对话框：只接受 `http(s)://…` 或 `vkey://config?server=…`。 */
     CONFIG_LINK,
 
     /** 设置 → 「用开户码接入」卡片：接受 `ENROLL-XXXX-XXXX`、`vkey://enroll?…` 与 `/join?c=…`。 */

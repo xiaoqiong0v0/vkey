@@ -34,7 +34,7 @@ func (s *Server) handlePairQR(w http.ResponseWriter, r *http.Request) {
 	png, err := qrcode.Encode(pairDeepLink(s.serverURL(r)), qrLevel, qrPNGSize)
 	if err != nil {
 		s.logErr("生成同步配置二维码失败", err)
-		writeErr(w, http.StatusInternalServerError, "internal", "服务端内部错误")
+		writeError(w, r, http.StatusInternalServerError, "internal")
 		return
 	}
 	// 地址随 Host/--domain 变化，禁止缓存，避免换域名后仍扫到旧地址。

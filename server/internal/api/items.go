@@ -73,20 +73,20 @@ type itemsGetResponse struct {
 func (s *Server) handlePostItems(w http.ResponseWriter, r *http.Request, dev *store.Device) {
 	var req itemsPostRequest
 	if err := readJSON(w, r, &req); err != nil {
-		writeReadError(w, err)
+		writeReadError(w, r, err)
 		return
 	}
 	if len(req.Items) > policy.MaxItemsPerRequest {
-		writeErr(w, http.StatusBadRequest, "too_many_items", "单次最多提交 500 条")
+		writeError(w, r, http.StatusBadRequest, "too_many_items")
 		return
 	}
 
 	now := s.nowUnix()
 	inputs := make([]store.ItemInput, 0, len(req.Items))
-	for i, it := range req.Items {
-		in, code, msg := normalizeItemInput(it, now)
+	for _, it := range req.Items {
+		in, code := normalizeItemInput(it, now)
 		if code != "" {
-			writeErr(w, http.StatusBadRequest, code, "items["+strconv.Itoa(i)+"]: "+msg)
+			writeError(w, r, http.StatusBadRequest, code)
 			return
 		}
 		inputs = append(inputs, in)
@@ -94,11 +94,11 @@ func (s *Server) handlePostItems(w http.ResponseWriter, r *http.Request, dev *st
 
 	results, err := s.store.ApplyItems(r.Context(), dev.UserID, inputs)
 	if err != nil {
-		if writeQuotaErr(w, err) {
+		if writeQuotaErr(w, r, err) {
 			return
 		}
 		s.logErr("应用条目失败", err)
-		writeErr(w, http.StatusInternalServerError, "internal", "服务端内部错误")
+		writeError(w, r, http.StatusInternalServerError, "internal")
 		return
 	}
 	if err := s.store.Audit(r.Context(), dev.UserID, dev.ID, "items.apply", now); err != nil {
@@ -115,19 +115,19 @@ func (s *Server) handlePostItems(w http.ResponseWriter, r *http.Request, dev *st
 }
 
 // normalizeItemInput 校验并转换单条条目；返回空错误码表示通过。
-func normalizeItemInput(it itemsPostItem, now int64) (store.ItemInput, string, string) {
+func normalizeItemInput(it itemsPostItem, now int64) (store.ItemInput, string) {
 	var in store.ItemInput
 	if it.ID == "" || len(it.ID) > policy.MaxItemIDBytes {
-		return in, "invalid_item", "id 必须为 1..128 字节"
+		return in, "invalid_item"
 	}
 	if it.Kind != kindTOTP && it.Kind != kindWebAuthn {
-		return in, "invalid_item", "kind 必须是 totp 或 webauthn"
+		return in, "invalid_item"
 	}
 	if it.RPID == "" || len(it.RPID) > policy.MaxRPIDBytes {
-		return in, "invalid_item", "rp_id 必须为 1..255 字节"
+		return in, "invalid_item"
 	}
 	if it.BaseVersion < 0 || it.UpdatedAt < 0 || it.DeletedAt < 0 {
-		return in, "invalid_item", "base_version/updated_at/deleted_at 不能为负"
+		return in, "invalid_item"
 	}
 
 	ct := []byte(nil)
@@ -135,13 +135,13 @@ func normalizeItemInput(it itemsPostItem, now int64) (store.ItemInput, string, s
 		var err error
 		ct, err = crypto.ParseB64(it.CT)
 		if err != nil {
-			return in, "invalid_item", "ct 不是合法的 base64url"
+			return in, "invalid_item"
 		}
 		if len(ct) > policy.MaxItemCiphertextBytes {
-			return in, "item_too_large", "ct 解码后超过 8192 字节"
+			return in, "item_too_large"
 		}
 	} else if it.DeletedAt == 0 {
-		return in, "invalid_item", "非墓碑条目的 ct 不能为空"
+		return in, "invalid_item"
 	}
 
 	nonce := []byte(nil)
@@ -149,13 +149,13 @@ func normalizeItemInput(it itemsPostItem, now int64) (store.ItemInput, string, s
 		var err error
 		nonce, err = crypto.ParseB64(it.Nonce)
 		if err != nil {
-			return in, "invalid_item", "nonce 不是合法的 base64url"
+			return in, "invalid_item"
 		}
 		if len(nonce) != crypto.NonceLen {
-			return in, "invalid_item", "nonce 必须为 12 字节"
+			return in, "invalid_item"
 		}
 	} else if it.DeletedAt == 0 {
-		return in, "invalid_item", "非墓碑条目的 nonce 不能为空"
+		return in, "invalid_item"
 	}
 
 	updated := it.UpdatedAt
@@ -172,7 +172,7 @@ func normalizeItemInput(it itemsPostItem, now int64) (store.ItemInput, string, s
 		UpdatedAt:   updated,
 		DeletedAt:   it.DeletedAt,
 	}
-	return in, "", ""
+	return in, ""
 }
 
 // handleGetItems 增量拉取条目（需鉴权）。
@@ -185,7 +185,7 @@ func (s *Server) handleGetItems(w http.ResponseWriter, r *http.Request, dev *sto
 	if v := r.URL.Query().Get("since"); v != "" {
 		n, err := strconv.ParseInt(v, 10, 64)
 		if err != nil || n < 0 {
-			writeErr(w, http.StatusBadRequest, "invalid_since", "since 必须是非负整数")
+			writeError(w, r, http.StatusBadRequest, "invalid_since")
 			return
 		}
 		since = n
@@ -193,7 +193,7 @@ func (s *Server) handleGetItems(w http.ResponseWriter, r *http.Request, dev *sto
 	items, next, err := s.store.ItemsSince(r.Context(), dev.UserID, since, policy.MaxItemsPage)
 	if err != nil {
 		s.logErr("拉取条目失败", err)
-		writeErr(w, http.StatusInternalServerError, "internal", "服务端内部错误")
+		writeError(w, r, http.StatusInternalServerError, "internal")
 		return
 	}
 	resp := itemsGetResponse{Items: make([]itemJSON, 0, len(items)), Next: next}

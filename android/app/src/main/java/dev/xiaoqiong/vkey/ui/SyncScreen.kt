@@ -73,6 +73,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.DialogProperties
 import dev.xiaoqiong.vkey.R
+import dev.xiaoqiong.vkey.i18n.headerLanguage
 import dev.xiaoqiong.vkey.net.ApiException
 import dev.xiaoqiong.vkey.sync.EnrollResult
 import dev.xiaoqiong.vkey.sync.GeneratedPairCode
@@ -280,7 +281,7 @@ fun SyncScreen(
                 error = context.getString(R.string.err_master_key_format)
             else -> runTask(context.getString(R.string.busy_logging_in)) {
                 val result = withContext(Dispatchers.IO) {
-                    SyncManager.login(address, mk, deviceName, device?.seed)
+                    SyncManager.login(address, mk, deviceName, device?.seed, headerLanguage(context))
                 }
                 onServerUrlChange(result.config.server_url)
                 // 落盘校验失败：保留输入、显式报错，不谎称「已登录」
@@ -306,7 +307,7 @@ fun SyncScreen(
                 error = context.getString(R.string.err_pair_code_format)
             else -> runTask(context.getString(R.string.busy_claiming_pair_code)) {
                 val result = withContext(Dispatchers.IO) {
-                    SyncManager.pair(address, code, deviceName, device?.seed)
+                    SyncManager.pair(address, code, deviceName, device?.seed, headerLanguage(context))
                 }
                 onServerUrlChange(result.config.server_url)
                 val failure = onSaved(result.config, result.masterKeyBase32.takeIf { it != masterKey })
@@ -324,7 +325,7 @@ fun SyncScreen(
     val runEnroll: (address: String, code: String, username: String) -> Unit = { address, code, username ->
         runTask(context.getString(R.string.busy_enrolling)) {
             val result = try {
-                SyncManager.enroll(address, code, username, deviceName, device?.seed)
+                SyncManager.enroll(address, code, username, deviceName, device?.seed, headerLanguage(context))
             } catch (e: ApiException) {
                 // 开户类错误码换成开户语境文案；其余交回 describeFailure 统一处理
                 val resId = enrollErrorRes(e.code)
@@ -388,7 +389,7 @@ fun SyncScreen(
                 addressBusy = true
                 scope.launch {
                     try {
-                        when (val probe = probeServerAddress(address)) {
+                        when (val probe = probeServerAddress(address, headerLanguage(context))) {
                             ServerProbe.Reachable -> {
                                 val rebind = requiresDeviceRebind(device?.server_url, address)
                                 url = address
@@ -422,7 +423,7 @@ fun SyncScreen(
             busy != null || cfg == null -> Unit
             else -> runTask(context.getString(R.string.busy_generating_pair_code)) {
                 val pairCode = withContext(Dispatchers.IO) {
-                    SyncManager.generatePairCode(cfg, masterKey)
+                    SyncManager.generatePairCode(cfg, masterKey, headerLanguage(context))
                 }
                 generated = pairCode
                 remainingSeconds = (pairCode.expiresAt - System.currentTimeMillis() / 1000).coerceAtLeast(0)

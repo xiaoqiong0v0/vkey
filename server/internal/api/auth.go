@@ -79,7 +79,7 @@ func (s *Server) handlePolicy(w http.ResponseWriter, r *http.Request) {
 	mode, err := s.store.UserMode(r.Context())
 	if err != nil {
 		s.logErr("查询用户模式失败", err)
-		writeErr(w, http.StatusInternalServerError, "internal", "服务端内部错误")
+		writeError(w, r, http.StatusInternalServerError, "internal")
 		return
 	}
 	resp := policyResponse{UserMode: mode, KDF: policy.KDFParams()}
@@ -95,7 +95,7 @@ func (s *Server) handlePolicy(w http.ResponseWriter, r *http.Request) {
 		// 尚未 init：返回默认策略。
 	default:
 		s.logErr("查询策略失败", err)
-		writeErr(w, http.StatusInternalServerError, "internal", "服务端内部错误")
+		writeError(w, r, http.StatusInternalServerError, "internal")
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -106,7 +106,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	items, devices, err := s.store.Counts(r.Context())
 	if err != nil {
 		s.logErr("统计失败", err)
-		writeErr(w, http.StatusInternalServerError, "internal", "服务端内部错误")
+		writeError(w, r, http.StatusInternalServerError, "internal")
 		return
 	}
 	writeJSON(w, http.StatusOK, healthResponse{
@@ -123,67 +123,67 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAuthToken(w http.ResponseWriter, r *http.Request) {
 	var req authTokenRequest
 	if err := readJSON(w, r, &req); err != nil {
-		writeReadError(w, err)
+		writeReadError(w, r, err)
 		return
 	}
 	if err := validateText("username", req.Username, policy.MaxUsernameBytes); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid_username", err.Error())
+		writeError(w, r, http.StatusBadRequest, "invalid_username")
 		return
 	}
 	verifier, err := parseFixedB64("verifier", req.Verifier, crypto.KeyLen)
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid_verifier", err.Error())
+		writeError(w, r, http.StatusBadRequest, "invalid_verifier")
 		return
 	}
 	pubkey, err := parseFixedB64("device.pubkey", req.Device.PubKey, 32)
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid_pubkey", err.Error())
+		writeError(w, r, http.StatusBadRequest, "invalid_pubkey")
 		return
 	}
 	if err := validateText("device.name", req.Device.Name, policy.MaxDeviceNameBytes); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid_device", err.Error())
+		writeError(w, r, http.StatusBadRequest, "invalid_device")
 		return
 	}
 	if err := validateText("device.platform", req.Device.Platform, policy.MaxPlatformBytes); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid_device", err.Error())
+		writeError(w, r, http.StatusBadRequest, "invalid_device")
 		return
 	}
 
 	u, err := s.store.UserByUsername(r.Context(), req.Username)
 	if errors.Is(err, store.ErrNotFound) {
-		writeErr(w, http.StatusUnauthorized, "invalid_credentials", "用户名或 verifier 不正确")
+		writeError(w, r, http.StatusUnauthorized, "invalid_credentials")
 		return
 	}
 	if err != nil {
 		s.logErr("查询用户失败", err)
-		writeErr(w, http.StatusInternalServerError, "internal", "服务端内部错误")
+		writeError(w, r, http.StatusInternalServerError, "internal")
 		return
 	}
 	// 常量时间比较，避免按字节提前返回。
 	if !crypto.Equal(u.Verifier, verifier) {
-		writeErr(w, http.StatusUnauthorized, "invalid_credentials", "用户名或 verifier 不正确")
+		writeError(w, r, http.StatusUnauthorized, "invalid_credentials")
 		return
 	}
 	// 已停用账号的重新认证同样返回 invalid_credentials：不向外暴露「停用」状态，防枚举。
 	if u.DisabledAt != 0 {
-		writeErr(w, http.StatusUnauthorized, "invalid_credentials", "用户名或 verifier 不正确")
+		writeError(w, r, http.StatusUnauthorized, "invalid_credentials")
 		return
 	}
 
 	token, err := crypto.NewToken()
 	if err != nil {
 		s.logErr("生成 token 失败", err)
-		writeErr(w, http.StatusInternalServerError, "internal", "服务端内部错误")
+		writeError(w, r, http.StatusInternalServerError, "internal")
 		return
 	}
 	deviceID, err := s.store.UpsertDevice(r.Context(), u.ID, req.Device.Name, req.Device.Platform,
 		pubkey, crypto.TokenHash(token), s.nowUnix())
 	if err != nil {
-		if writeQuotaErr(w, err) {
+		if writeQuotaErr(w, r, err) {
 			return
 		}
 		s.logErr("upsert 设备失败", err)
-		writeErr(w, http.StatusInternalServerError, "internal", "服务端内部错误")
+		writeError(w, r, http.StatusInternalServerError, "internal")
 		return
 	}
 	if err := s.store.Audit(r.Context(), u.ID, deviceID, "auth.token", s.nowUnix()); err != nil {
@@ -203,27 +203,26 @@ func (s *Server) handleAuthToken(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleSetPassword(w http.ResponseWriter, r *http.Request, dev *store.Device) {
 	var req passwordRequest
 	if err := readJSON(w, r, &req); err != nil {
-		writeReadError(w, err)
+		writeReadError(w, r, err)
 		return
 	}
 	pwSalt, err := parseFixedB64("pw_salt", req.PWSalt, crypto.PWSaltLen)
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid_pw_salt", err.Error())
+		writeError(w, r, http.StatusBadRequest, "invalid_pw_salt")
 		return
 	}
 	wrappedKey, err := crypto.ParseB64(req.WrappedKey)
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid_wrapped_key", "wrapped_key 不是合法的 base64url")
+		writeError(w, r, http.StatusBadRequest, "invalid_wrapped_key")
 		return
 	}
 	if len(wrappedKey) <= crypto.NonceLen+crypto.TagLen || len(wrappedKey) > policy.MaxWrappedKeyBytes {
-		writeErr(w, http.StatusBadRequest, "invalid_wrapped_key",
-			"wrapped_key 必须是 nonce(12)||ct||tag 自包含布局，长度 ≤ 80 字节")
+		writeError(w, r, http.StatusBadRequest, "invalid_wrapped_key")
 		return
 	}
 	if err := s.store.SetPasswordWrap(r.Context(), dev.UserID, wrappedKey, pwSalt); err != nil {
 		s.logErr("写入主密码包裹失败", err)
-		writeErr(w, http.StatusInternalServerError, "internal", "服务端内部错误")
+		writeError(w, r, http.StatusInternalServerError, "internal")
 		return
 	}
 	if err := s.store.Audit(r.Context(), dev.UserID, dev.ID, "auth.password.set", s.nowUnix()); err != nil {
@@ -236,17 +235,16 @@ func (s *Server) handleSetPassword(w http.ResponseWriter, r *http.Request, dev *
 func (s *Server) handleDeletePassword(w http.ResponseWriter, r *http.Request, dev *store.Device) {
 	var req passwordDeleteRequest
 	if err := readJSON(w, r, &req); err != nil {
-		writeReadError(w, err)
+		writeReadError(w, r, err)
 		return
 	}
 	if req.Confirm != removePasswordConfirm {
-		writeErr(w, http.StatusBadRequest, "invalid_confirm",
-			"必须回传 {\"confirm\":\"remove-master-password\"} 才能删除主密码包裹")
+		writeError(w, r, http.StatusBadRequest, "invalid_confirm")
 		return
 	}
 	if err := s.store.ClearPasswordWrap(r.Context(), dev.UserID); err != nil {
 		s.logErr("清空主密码包裹失败", err)
-		writeErr(w, http.StatusInternalServerError, "internal", "服务端内部错误")
+		writeError(w, r, http.StatusInternalServerError, "internal")
 		return
 	}
 	if err := s.store.Audit(r.Context(), dev.UserID, dev.ID, "auth.password.clear", s.nowUnix()); err != nil {

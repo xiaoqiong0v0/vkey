@@ -68,7 +68,7 @@ func (s *Server) readArtifactWhitelist() (map[string]string, error) {
 
 // handleArtifactNotFound 处理 /dl/ 下的空名与多段路径（统一 404）。
 func (s *Server) handleArtifactNotFound(w http.ResponseWriter, r *http.Request) {
-	writeErr(w, http.StatusNotFound, "not_found", "文件不存在")
+	writeError(w, r, http.StatusNotFound, "not_found")
 }
 
 // hasDotSegmentOrBackslash 判断路径是否含 "." / ".." 段或反斜杠。
@@ -93,41 +93,41 @@ func hasDotSegmentOrBackslash(p string) bool {
 func (s *Server) handleArtifact(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	if name == manifestName {
-		s.serveManifest(w)
+		s.serveManifest(w, r)
 		return
 	}
 	if !validArtifactName(name) {
-		writeErr(w, http.StatusNotFound, "not_found", "文件不存在")
+		writeError(w, r, http.StatusNotFound, "not_found")
 		return
 	}
 
 	whitelist, err := s.readArtifactWhitelist()
 	if err != nil {
 		// 目录或清单缺失：仅 /dl/* 受影响，其它接口照常工作。
-		writeErr(w, http.StatusNotFound, "not_found", "文件不存在")
+		writeError(w, r, http.StatusNotFound, "not_found")
 		return
 	}
 	if _, ok := whitelist[name]; !ok {
-		writeErr(w, http.StatusNotFound, "not_found", "文件不存在")
+		writeError(w, r, http.StatusNotFound, "not_found")
 		return
 	}
 
 	dir := filepath.Clean(s.opts.ArtifactsDir)
 	path := filepath.Join(dir, name)
 	if filepath.Dir(path) != dir {
-		writeErr(w, http.StatusNotFound, "not_found", "文件不存在")
+		writeError(w, r, http.StatusNotFound, "not_found")
 		return
 	}
 
 	// Lstat 拒绝符号链接，避免借白名单名字读到目录外文件。
 	info, err := os.Lstat(path)
 	if err != nil || !info.Mode().IsRegular() {
-		writeErr(w, http.StatusNotFound, "not_found", "文件不存在")
+		writeError(w, r, http.StatusNotFound, "not_found")
 		return
 	}
 	f, err := os.Open(path)
 	if err != nil {
-		writeErr(w, http.StatusNotFound, "not_found", "文件不存在")
+		writeError(w, r, http.StatusNotFound, "not_found")
 		return
 	}
 	defer func() { _ = f.Close() }()
@@ -139,11 +139,11 @@ func (s *Server) handleArtifact(w http.ResponseWriter, r *http.Request) {
 }
 
 // serveManifest 返回 SHA256SUMS 原文。
-func (s *Server) serveManifest(w http.ResponseWriter) {
+func (s *Server) serveManifest(w http.ResponseWriter, r *http.Request) {
 	dir := s.opts.ArtifactsDir
 	data, err := os.ReadFile(filepath.Join(dir, manifestName))
 	if err != nil {
-		writeErr(w, http.StatusNotFound, "not_found", "文件不存在")
+		writeError(w, r, http.StatusNotFound, "not_found")
 		return
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")

@@ -3,8 +3,33 @@ package dev.xiaoqiong.vkey.i18n
 import android.content.Context
 import android.content.res.Configuration
 import android.os.LocaleList
+import dev.xiaoqiong.vkey.vault.AppSettings
 import dev.xiaoqiong.vkey.vault.LanguageMode
 import java.util.Locale
+
+/** `Accept-Language` 请求头名。 */
+const val ACCEPT_LANGUAGE_HEADER: String = "Accept-Language"
+
+/** 中文（简体）语言标识。 */
+const val ACCEPT_LANGUAGE_ZH: String = "zh-CN"
+
+/** 英文语言标识。 */
+const val ACCEPT_LANGUAGE_EN: String = "en"
+
+/**
+ * 返回当前 App 语言对应的 `Accept-Language` 取值。
+ *
+ * 显式选中语言时用该语言；跟随系统时用 [Locale.getDefault]（`MainActivity`
+ * 在跟随系统时已把它复位为系统 locale）。非英文的系统语言按中文处理，
+ * 与资源目录（`values/` 为中文、`values-en/` 为英文）的回落一致。
+ *
+ * @param context 任意 context
+ * @return `zh-CN` 或 `en`
+ */
+fun headerLanguage(context: Context): String {
+    val locale = AppSettings(context).language.locale ?: Locale.getDefault()
+    return if (locale.language.equals("en", ignoreCase = true)) ACCEPT_LANGUAGE_EN else ACCEPT_LANGUAGE_ZH
+}
 
 /**
  * 语言切换支持（不依赖 appcompat）。

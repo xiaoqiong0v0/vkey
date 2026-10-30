@@ -141,7 +141,7 @@ func (s *Server) withCommon(next http.Handler) http.Handler {
 			if rec := recover(); rec != nil {
 				s.logger.Printf("panic: %v (%s %s)", rec, r.Method, r.URL.Path)
 				if !sw.wrote {
-					writeErr(sw, http.StatusInternalServerError, "internal", "服务端内部错误")
+					writeError(sw, r, http.StatusInternalServerError, "internal")
 				}
 			}
 			s.logger.Printf("%s %s -> %d (%s)", r.Method, safeURI(r), sw.status, time.Since(start).Round(time.Millisecond))
@@ -158,7 +158,7 @@ func (s *Server) withCommon(next http.Handler) http.Handler {
 		// 在进入 ServeMux 前就返回 404。否则 ServeMux 的 cleanPath 会把
 		// /dl/../x 301 重定向到 /x，既不符合契约也会暴露目录结构。
 		if strings.HasPrefix(r.URL.Path, "/dl/") && hasDotSegmentOrBackslash(r.URL.Path) {
-			writeErr(sw, http.StatusNotFound, "not_found", "文件不存在")
+			writeError(sw, r, http.StatusNotFound, "not_found")
 			return
 		}
 		next.ServeHTTP(sw, r)
@@ -193,12 +193,12 @@ func (w *statusWriter) Write(b []byte) (int, error) {
 // handleMethodNotAllowed 返回统一的 405 JSON 错误。
 func (s *Server) handleMethodNotAllowed(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Allow", allowedMethods(r.URL.Path))
-	writeErr(w, http.StatusMethodNotAllowed, "method_not_allowed", "不支持的请求方法")
+	writeError(w, r, http.StatusMethodNotAllowed, "method_not_allowed")
 }
 
 // handleAPINotFound 返回统一的 404 JSON 错误。
 func (s *Server) handleAPINotFound(w http.ResponseWriter, r *http.Request) {
-	writeErr(w, http.StatusNotFound, "not_found", "接口不存在")
+	writeError(w, r, http.StatusNotFound, "not_found")
 }
 
 // allowedMethods 返回路径允许的方法列表（用于 405 的 Allow 头）。
@@ -239,11 +239,13 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = enc.Encode(v)
 }
 
-// writeErr 写出统一错误响应。
-func writeErr(w http.ResponseWriter, status int, code, msg string) {
+// writeError 写出统一错误响应。
+//
+// message 按请求的 Accept-Language 本地化；code 与语言无关，保持稳定。
+func writeError(w http.ResponseWriter, r *http.Request, status int, code string) {
 	var body errorBody
 	body.Error.Code = code
-	body.Error.Message = msg
+	body.Error.Message = msg(langOf(r), code)
 	writeJSON(w, status, body)
 }
 
@@ -287,14 +289,14 @@ func readJSON(w http.ResponseWriter, r *http.Request, v any) error {
 }
 
 // writeReadError 把 readJSON 的错误映射为统一响应。
-func writeReadError(w http.ResponseWriter, err error) {
+func writeReadError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, errBodyTooLarge):
-		writeErr(w, http.StatusRequestEntityTooLarge, "body_too_large", "请求体超过 8 MiB")
+		writeError(w, r, http.StatusRequestEntityTooLarge, "body_too_large")
 	case errors.Is(err, errBodyEmpty):
-		writeErr(w, http.StatusBadRequest, "empty_body", "请求体不能为空")
+		writeError(w, r, http.StatusBadRequest, "empty_body")
 	default:
-		writeErr(w, http.StatusBadRequest, "invalid_json", err.Error())
+		writeError(w, r, http.StatusBadRequest, "invalid_json")
 	}
 }
 
@@ -308,9 +310,9 @@ type authedFunc func(w http.ResponseWriter, r *http.Request, dev *store.Device)
 // withAuth 包装需要设备签名鉴权的处理函数。
 func (s *Server) withAuth(next authedFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		dev, status, code, msg := s.authenticate(w, r)
+		dev, status, code := s.authenticate(w, r)
 		if dev == nil {
-			writeErr(w, status, code, msg)
+			writeError(w, r, status, code)
 			return
 		}
 		next(w, r, dev)
@@ -319,78 +321,78 @@ func (s *Server) withAuth(next authedFunc) http.HandlerFunc {
 
 // authenticate 校验 Bearer token、时间戳与 Ed25519 请求签名。
 //
-// 返回：成功时返回设备与零值状态；失败时返回状态码与错误码。
+// 返回：成功时返回设备与零值状态；失败时返回状态码与错误码（文案由调用方本地化）。
 // 注意：校验通过后请求体会被还原，后续 handler 可再次读取。
-func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) (*store.Device, int, string, string) {
+func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) (*store.Device, int, string) {
 	const prefix = "Bearer "
 	authz := r.Header.Get("Authorization")
 	if len(authz) <= len(prefix) || !strings.EqualFold(authz[:len(prefix)], prefix) {
-		return nil, http.StatusUnauthorized, "missing_token", "缺少 Authorization: Bearer <token>"
+		return nil, http.StatusUnauthorized, "missing_token"
 	}
 	token, err := crypto.ParseB64(strings.TrimSpace(authz[len(prefix):]))
 	if err != nil || len(token) != crypto.TokenLen {
-		return nil, http.StatusUnauthorized, "invalid_token", "token 编码非法"
+		return nil, http.StatusUnauthorized, "invalid_token"
 	}
 
 	tsStr := strings.TrimSpace(r.Header.Get("X-Vkey-Ts"))
 	if tsStr == "" {
-		return nil, http.StatusUnauthorized, "missing_ts", "缺少 X-Vkey-Ts"
+		return nil, http.StatusUnauthorized, "missing_ts"
 	}
 	ts, err := strconv.ParseInt(tsStr, 10, 64)
 	if err != nil {
-		return nil, http.StatusUnauthorized, "invalid_ts", "X-Vkey-Ts 必须是 unix 秒"
+		return nil, http.StatusUnauthorized, "invalid_ts"
 	}
 	if skew := s.nowUnix() - ts; skew > policy.ClockSkewSeconds || skew < -policy.ClockSkewSeconds {
-		return nil, http.StatusUnauthorized, "ts_skew", "请求时间戳超出 ±120 秒"
+		return nil, http.StatusUnauthorized, "ts_skew"
 	}
 
 	dev, err := s.store.DeviceByTokenHash(r.Context(), crypto.TokenHash(token))
 	if errors.Is(err, store.ErrNotFound) {
-		return nil, http.StatusUnauthorized, "invalid_token", "token 无效或设备已吊销"
+		return nil, http.StatusUnauthorized, "invalid_token"
 	}
 	if err != nil {
 		s.logger.Printf("auth/device 查询失败: %v", err)
-		return nil, http.StatusInternalServerError, "internal", "服务端内部错误"
+		return nil, http.StatusInternalServerError, "internal"
 	}
 
 	// 账号被管理员停用（disable）后，该账号全部设备立即 401；数据保留。
 	u, err := s.store.UserByID(r.Context(), dev.UserID)
 	if errors.Is(err, store.ErrNotFound) {
-		return nil, http.StatusUnauthorized, "invalid_token", "token 无效或设备已吊销"
+		return nil, http.StatusUnauthorized, "invalid_token"
 	}
 	if err != nil {
 		s.logger.Printf("auth/user 查询失败: %v", err)
-		return nil, http.StatusInternalServerError, "internal", "服务端内部错误"
+		return nil, http.StatusInternalServerError, "internal"
 	}
 	if u.DisabledAt != 0 {
-		return nil, http.StatusUnauthorized, "user_disabled", "账号已被停用"
+		return nil, http.StatusUnauthorized, "user_disabled"
 	}
 
 	body, err := readBody(w, r)
 	if err != nil {
 		if errors.Is(err, errBodyTooLarge) {
-			return nil, http.StatusRequestEntityTooLarge, "body_too_large", "请求体超过 8 MiB"
+			return nil, http.StatusRequestEntityTooLarge, "body_too_large"
 		}
-		return nil, http.StatusBadRequest, "bad_request", err.Error()
+		return nil, http.StatusBadRequest, "bad_request"
 	}
 
 	sig, err := crypto.ParseB64(strings.TrimSpace(r.Header.Get("X-Vkey-Sig")))
 	if err != nil || len(sig) != 64 {
-		return nil, http.StatusUnauthorized, "missing_sig", "缺少或非法的 X-Vkey-Sig"
+		return nil, http.StatusUnauthorized, "missing_sig"
 	}
 	rawURI := r.RequestURI
 	if rawURI == "" {
 		rawURI = r.URL.RequestURI()
 	}
 	if !crypto.Verify(dev.PubKey, r.Method, rawURI, body, ts, sig) {
-		return nil, http.StatusUnauthorized, "bad_signature", "请求签名校验失败"
+		return nil, http.StatusUnauthorized, "bad_signature"
 	}
 
 	r.Body = io.NopCloser(bytes.NewReader(body))
 	if err := s.store.TouchDevice(r.Context(), dev.UserID, dev.ID, s.nowUnix()); err != nil {
 		s.logger.Printf("更新设备活跃时间失败: %v", err)
 	}
-	return dev, 0, "", ""
+	return dev, 0, ""
 }
 
 // withRateLimit 对免鉴权端点施加按 IP 的固定窗口限流。
@@ -400,7 +402,7 @@ func (s *Server) withRateLimit(name string, next http.HandlerFunc) http.HandlerF
 		ok, retry := s.rl.allow(key, s.now())
 		if !ok {
 			w.Header().Set("Retry-After", strconv.FormatInt(retry, 10))
-			writeErr(w, http.StatusTooManyRequests, "rate_limited", "请求过于频繁，请稍后重试")
+			writeError(w, r, http.StatusTooManyRequests, "rate_limited")
 			return
 		}
 		next(w, r)
@@ -458,14 +460,14 @@ func b64Ptr(b []byte) *string {
 // writeQuotaErr 把配额类存储错误映射为统一的 409 JSON 响应。
 //
 // 返回：true 表示已写出响应（调用方应直接 return）；false 表示 err 不是配额错误。
-func writeQuotaErr(w http.ResponseWriter, err error) bool {
+func writeQuotaErr(w http.ResponseWriter, r *http.Request, err error) bool {
 	switch {
 	case errors.Is(err, store.ErrQuotaItems):
-		writeErr(w, http.StatusConflict, "quota_items", "超出每用户条目数配额")
+		writeError(w, r, http.StatusConflict, "quota_items")
 	case errors.Is(err, store.ErrQuotaBytes):
-		writeErr(w, http.StatusConflict, "quota_bytes", "超出每用户密文字节配额")
+		writeError(w, r, http.StatusConflict, "quota_bytes")
 	case errors.Is(err, store.ErrQuotaDevices):
-		writeErr(w, http.StatusConflict, "quota_devices", "超出每用户设备数配额")
+		writeError(w, r, http.StatusConflict, "quota_devices")
 	default:
 		return false
 	}

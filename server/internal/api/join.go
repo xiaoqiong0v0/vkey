@@ -149,7 +149,7 @@ func (s *Server) handleJoinQR(w http.ResponseWriter, r *http.Request) {
 	png, err := qrcode.Encode(v.DeepLink, qrLevel, qrPNGSize)
 	if err != nil {
 		s.logErr("生成开户二维码失败", err)
-		writeErr(w, http.StatusInternalServerError, "internal", "服务端内部错误")
+		writeError(w, r, http.StatusInternalServerError, "internal")
 		return
 	}
 	w.Header().Set("Content-Type", "image/png")
@@ -171,7 +171,7 @@ func (s *Server) resolveJoin(w http.ResponseWriter, r *http.Request) (*joinView,
 	mode, err := s.store.UserMode(r.Context())
 	if err != nil {
 		s.logErr("查询用户模式失败", err)
-		writeErr(w, http.StatusInternalServerError, "internal", "服务端内部错误")
+		writeError(w, r, http.StatusInternalServerError, "internal")
 		return nil, false
 	}
 	if mode != policy.UserModeAdmin {
@@ -181,7 +181,7 @@ func (s *Server) resolveJoin(w http.ResponseWriter, r *http.Request) (*joinView,
 	state, rec, err := s.store.PeekEnrollCode(r.Context(), plain, s.nowUnix())
 	if err != nil {
 		s.logErr("查询开户码状态失败", err)
-		writeErr(w, http.StatusInternalServerError, "internal", "服务端内部错误")
+		writeError(w, r, http.StatusInternalServerError, "internal")
 		return nil, false
 	}
 	if state != store.EnrollCodeActive || rec == nil {

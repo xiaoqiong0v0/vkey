@@ -32,7 +32,7 @@ func (s *Server) handleUpdateAndroid(w http.ResponseWriter, r *http.Request) {
 	info, err := s.store.UpdateInfo(r.Context())
 	if err != nil {
 		s.logErr("查询更新配置失败", err)
-		writeErr(w, http.StatusInternalServerError, "internal", "服务端内部错误")
+		writeError(w, r, http.StatusInternalServerError, "internal")
 		return
 	}
 	info = s.refreshUpdateIfDue(r.Context(), info)

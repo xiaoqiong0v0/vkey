@@ -73,6 +73,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.xiaoqiong.vkey.i18n.LocaleSupport
+import dev.xiaoqiong.vkey.i18n.headerLanguage
 import dev.xiaoqiong.vkey.net.UpdateApi
 import dev.xiaoqiong.vkey.net.UpdateInfo
 import dev.xiaoqiong.vkey.sync.EnrollDeepLink
@@ -1010,7 +1011,7 @@ private fun VaultScreen(
             updateCheckStatus = context.getString(R.string.update_checking)
             scope.launch {
                 try {
-                    val info = UpdateApi().check(target)
+                    val info = UpdateApi(acceptLanguage = headerLanguage(context)).check(target)
                     updateSettings.lastUpdateCheckAt = System.currentTimeMillis()
                     val newer = info?.takeIf {
                         UpdateVerifier.isNewer(it.versionCode, currentVersionCode.toLong())
@@ -1036,7 +1037,7 @@ private fun VaultScreen(
         } else {
             // 静默检查：不写页面状态，失败直接忽略
             scope.launch {
-                runCatching { UpdateApi().check(target) }
+                runCatching { UpdateApi(acceptLanguage = headerLanguage(context)).check(target) }
                     .onSuccess { info ->
                         if (info != null &&
                             UpdateVerifier.isNewer(info.versionCode, currentVersionCode.toLong())
@@ -1086,7 +1087,8 @@ private fun VaultScreen(
                         downloadProgress = 1f
                     } else {
                         if (apk.exists()) apk.delete()
-                        UpdateApi().download(info.url, apk, info.size) { done, total ->
+                        val updateApi = UpdateApi(acceptLanguage = headerLanguage(context))
+                        updateApi.download(info.url, apk, info.size) { done, total ->
                             if (total > 0L) {
                                 val fraction = (done.toFloat() / total.toFloat()).coerceIn(0f, 1f)
                                 // 按 1% 粒度刷新，避免每 64KB 都触发重组
@@ -1165,7 +1167,7 @@ private fun VaultScreen(
         syncMutex.withLock {
             val before = latestVault
             try {
-                val outcome = ItemsSync.sync(before)
+                val outcome = ItemsSync.sync(before, acceptLanguage = headerLanguage(context))
                 val synced = outcome.vault
                 val syncedIds = synced.items.mapTo(HashSet()) { it.id }
                 val syncedWebAuthnIds = synced.webAuthn.mapTo(HashSet()) { it.id }
@@ -1221,7 +1223,7 @@ private fun VaultScreen(
             webAuthnActionError = null
             try {
                 val masterKey = SyncManager.parseMasterKey(latestVault.master_key)
-                val api = SyncManager.authorizedApi(config)
+                val api = SyncManager.authorizedApi(config, headerLanguage(context))
                 val live = withContext(Dispatchers.IO) {
                     ItemsSync.fetchWebAuthnLiveDetailed(api, masterKey)
                 }
@@ -1244,7 +1246,7 @@ private fun VaultScreen(
             } else {
                 webAuthnActionError = null
                 try {
-                    val api = SyncManager.authorizedApi(config)
+                    val api = SyncManager.authorizedApi(config, headerLanguage(context))
                     withContext(Dispatchers.IO) { ItemsSync.revokeWebAuthn(api, item) }
                     loadWebAuthn()
                 } catch (t: Throwable) {

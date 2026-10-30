@@ -57,28 +57,28 @@ type pairClaimResponse struct {
 func (s *Server) handlePairNew(w http.ResponseWriter, r *http.Request, dev *store.Device) {
 	var req pairNewRequest
 	if err := readJSON(w, r, &req); err != nil {
-		writeReadError(w, err)
+		writeReadError(w, r, err)
 		return
 	}
 	if !codeIDPattern.MatchString(req.CodeID) {
-		writeErr(w, http.StatusBadRequest, "invalid_code_id", "code_id 必须是 1..64 位 [A-Za-z0-9._-]")
+		writeError(w, r, http.StatusBadRequest, "invalid_code_id")
 		return
 	}
 	code, canonical, err := pair.Normalize(req.Code)
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid_code", err.Error())
+		writeError(w, r, http.StatusBadRequest, "invalid_code")
 		return
 	}
 	blob, err := crypto.ParseB64(req.Blob)
 	if err != nil || len(blob) <= crypto.NonceLen+16 || len(blob) > policy.MaxPairBlobBytes {
-		writeErr(w, http.StatusBadRequest, "invalid_blob", "blob 必须是 base64url，长度 29..4096 字节")
+		writeError(w, r, http.StatusBadRequest, "invalid_blob")
 		return
 	}
 	var pwSalt []byte
 	if req.PWSalt != "" {
 		pwSalt, err = parseFixedB64("pw_salt", req.PWSalt, crypto.PWSaltLen)
 		if err != nil {
-			writeErr(w, http.StatusBadRequest, "invalid_pw_salt", err.Error())
+			writeError(w, r, http.StatusBadRequest, "invalid_pw_salt")
 			return
 		}
 	}
@@ -96,11 +96,11 @@ func (s *Server) handlePairNew(w http.ResponseWriter, r *http.Request, dev *stor
 	}
 	if err := s.store.CreatePair(r.Context(), p); err != nil {
 		if errors.Is(err, store.ErrExists) {
-			writeErr(w, http.StatusConflict, "code_id_exists", "code_id 已存在")
+			writeError(w, r, http.StatusConflict, "code_id_exists")
 			return
 		}
 		s.logErr("创建配对会话失败", err)
-		writeErr(w, http.StatusInternalServerError, "internal", "服务端内部错误")
+		writeError(w, r, http.StatusInternalServerError, "internal")
 		return
 	}
 	if err := s.store.Audit(r.Context(), dev.UserID, dev.ID, "pair.new", now); err != nil {
@@ -113,54 +113,54 @@ func (s *Server) handlePairNew(w http.ResponseWriter, r *http.Request, dev *stor
 func (s *Server) handlePairClaim(w http.ResponseWriter, r *http.Request) {
 	var req pairClaimRequest
 	if err := readJSON(w, r, &req); err != nil {
-		writeReadError(w, err)
+		writeReadError(w, r, err)
 		return
 	}
 	code, _, err := pair.Normalize(req.Code)
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid_code", err.Error())
+		writeError(w, r, http.StatusBadRequest, "invalid_code")
 		return
 	}
 	pubkey, err := parseFixedB64("pubkey", req.PubKey, 32)
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid_pubkey", err.Error())
+		writeError(w, r, http.StatusBadRequest, "invalid_pubkey")
 		return
 	}
 	if err := validateText("name", req.Name, policy.MaxDeviceNameBytes); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid_device", err.Error())
+		writeError(w, r, http.StatusBadRequest, "invalid_device")
 		return
 	}
 	if err := validateText("platform", req.Platform, policy.MaxPlatformBytes); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid_device", err.Error())
+		writeError(w, r, http.StatusBadRequest, "invalid_device")
 		return
 	}
 
 	token, err := crypto.NewToken()
 	if err != nil {
 		s.logErr("生成 token 失败", err)
-		writeErr(w, http.StatusInternalServerError, "internal", "服务端内部错误")
+		writeError(w, r, http.StatusInternalServerError, "internal")
 		return
 	}
 	claim, err := s.store.ClaimPair(r.Context(), pair.Hash(code), req.Name, req.Platform,
 		pubkey, crypto.TokenHash(token), s.nowUnix())
 	switch {
 	case errors.Is(err, store.ErrNotFound):
-		writeErr(w, http.StatusNotFound, "code_not_found", "配对码不存在")
+		writeError(w, r, http.StatusNotFound, "code_not_found")
 		return
 	case errors.Is(err, store.ErrPairUsed):
-		writeErr(w, http.StatusConflict, "code_used", "配对码已被使用")
+		writeError(w, r, http.StatusConflict, "code_used")
 		return
 	case errors.Is(err, store.ErrPairExpired):
-		writeErr(w, http.StatusGone, "code_expired", "配对码已过期")
+		writeError(w, r, http.StatusGone, "code_expired")
 		return
 	case errors.Is(err, store.ErrUserDisabled):
-		writeErr(w, http.StatusUnauthorized, "user_disabled", "账号已被停用")
+		writeError(w, r, http.StatusUnauthorized, "user_disabled")
 		return
-	case writeQuotaErr(w, err):
+	case writeQuotaErr(w, r, err):
 		return
 	case err != nil:
 		s.logErr("领取配对码失败", err)
-		writeErr(w, http.StatusInternalServerError, "internal", "服务端内部错误")
+		writeError(w, r, http.StatusInternalServerError, "internal")
 		return
 	}
 	if err := s.store.Audit(r.Context(), claim.UserID, claim.DeviceID, "pair.claim", s.nowUnix()); err != nil {

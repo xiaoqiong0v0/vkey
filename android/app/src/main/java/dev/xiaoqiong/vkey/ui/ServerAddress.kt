@@ -2,6 +2,8 @@ package dev.xiaoqiong.vkey.ui
 
 import android.content.Context
 import dev.xiaoqiong.vkey.R
+import dev.xiaoqiong.vkey.i18n.ACCEPT_LANGUAGE_HEADER
+import dev.xiaoqiong.vkey.i18n.ACCEPT_LANGUAGE_ZH
 import java.io.IOException
 import java.io.InterruptedIOException
 import java.net.SocketTimeoutException
@@ -134,12 +136,20 @@ internal fun requiresDeviceRebind(deviceServerUrl: String?, newUrl: String): Boo
  * 只读、免鉴权；不涉及同步 / 加密逻辑。
  *
  * @param baseUrl 用户填写的服务器地址
+ * @param acceptLanguage 请求头 `Accept-Language` 取值
  * @return 探测结果（不会抛异常）
  */
-internal suspend fun probeServerAddress(baseUrl: String): ServerProbe = withContext(Dispatchers.IO) {
+internal suspend fun probeServerAddress(
+    baseUrl: String,
+    acceptLanguage: String = ACCEPT_LANGUAGE_ZH,
+): ServerProbe = withContext(Dispatchers.IO) {
     val url = policyProbeUrl(baseUrl)
         ?: return@withContext ServerProbe.Unreachable(ServerProbe.Unreachable.Reason.INVALID_URL)
-    val request = Request.Builder().url(url).get().build()
+    val request = Request.Builder()
+        .url(url)
+        .header(ACCEPT_LANGUAGE_HEADER, acceptLanguage)
+        .get()
+        .build()
     try {
         probeClient.newCall(request).execute().use { response ->
             probeResultOfStatus(response.code)

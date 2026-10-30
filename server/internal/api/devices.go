@@ -49,7 +49,7 @@ func (s *Server) handleDeviceList(w http.ResponseWriter, r *http.Request, dev *s
 	devices, err := s.store.ListDevices(r.Context(), dev.UserID)
 	if err != nil {
 		s.logErr("查询设备列表失败", err)
-		writeErr(w, http.StatusInternalServerError, "internal", "服务端内部错误")
+		writeError(w, r, http.StatusInternalServerError, "internal")
 		return
 	}
 	items := make([]deviceListItem, 0, len(devices))
@@ -73,29 +73,29 @@ func (s *Server) handleDeviceList(w http.ResponseWriter, r *http.Request, dev *s
 func (s *Server) handleDeviceRegister(w http.ResponseWriter, r *http.Request, dev *store.Device) {
 	var req deviceRegisterRequest
 	if err := readJSON(w, r, &req); err != nil {
-		writeReadError(w, err)
+		writeReadError(w, r, err)
 		return
 	}
 	pubkey, err := parseFixedB64("pubkey", req.PubKey, 32)
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid_pubkey", err.Error())
+		writeError(w, r, http.StatusBadRequest, "invalid_pubkey")
 		return
 	}
 	if err := validateText("name", req.Name, policy.MaxDeviceNameBytes); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid_device", err.Error())
+		writeError(w, r, http.StatusBadRequest, "invalid_device")
 		return
 	}
 	if err := validateText("platform", req.Platform, policy.MaxPlatformBytes); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid_device", err.Error())
+		writeError(w, r, http.StatusBadRequest, "invalid_device")
 		return
 	}
 	deviceID, err := s.store.CreateDevice(r.Context(), dev.UserID, req.Name, req.Platform, pubkey, nil, s.nowUnix())
 	if err != nil {
-		if writeQuotaErr(w, err) {
+		if writeQuotaErr(w, r, err) {
 			return
 		}
 		s.logErr("注册设备失败", err)
-		writeErr(w, http.StatusInternalServerError, "internal", "服务端内部错误")
+		writeError(w, r, http.StatusInternalServerError, "internal")
 		return
 	}
 	if err := s.store.Audit(r.Context(), dev.UserID, dev.ID, "device.register", s.nowUnix()); err != nil {
@@ -108,21 +108,21 @@ func (s *Server) handleDeviceRegister(w http.ResponseWriter, r *http.Request, de
 func (s *Server) handleDeviceRevoke(w http.ResponseWriter, r *http.Request, dev *store.Device) {
 	var req deviceRevokeRequest
 	if err := readJSON(w, r, &req); err != nil {
-		writeReadError(w, err)
+		writeReadError(w, r, err)
 		return
 	}
 	if err := validateText("device_id", req.DeviceID, 128); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid_device", err.Error())
+		writeError(w, r, http.StatusBadRequest, "invalid_device")
 		return
 	}
 	err := s.store.RevokeDevice(r.Context(), dev.UserID, req.DeviceID, s.nowUnix())
 	if errors.Is(err, store.ErrNotFound) {
-		writeErr(w, http.StatusNotFound, "device_not_found", "设备不存在或已吊销")
+		writeError(w, r, http.StatusNotFound, "device_not_found")
 		return
 	}
 	if err != nil {
 		s.logErr("吊销设备失败", err)
-		writeErr(w, http.StatusInternalServerError, "internal", "服务端内部错误")
+		writeError(w, r, http.StatusInternalServerError, "internal")
 		return
 	}
 	if err := s.store.Audit(r.Context(), dev.UserID, dev.ID, "device.revoke", s.nowUnix()); err != nil {

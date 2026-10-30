@@ -1,6 +1,8 @@
 package dev.xiaoqiong.vkey.net
 
 import android.util.Log
+import dev.xiaoqiong.vkey.i18n.ACCEPT_LANGUAGE_HEADER
+import dev.xiaoqiong.vkey.i18n.ACCEPT_LANGUAGE_ZH
 import java.io.File
 import java.io.IOException
 import java.util.concurrent.TimeUnit
@@ -61,6 +63,8 @@ class UpdateException(
  */
 class UpdateApi(
     private val client: OkHttpClient = defaultClient(),
+    /** 请求头 `Accept-Language` 取值（决定服务端错误文案语言）。 */
+    private val acceptLanguage: String = ACCEPT_LANGUAGE_ZH,
 ) {
 
     /**
@@ -74,7 +78,11 @@ class UpdateApi(
         val root = serverUrl.trim().trimEnd('/')
         val url = (root + CHECK_PATH).toHttpUrlOrNull()
             ?: throw UpdateException(0, "invalid server url: ${redact(root)}")
-        val request = Request.Builder().url(url).get().build()
+        val request = Request.Builder()
+            .url(url)
+            .header(ACCEPT_LANGUAGE_HEADER, acceptLanguage)
+            .get()
+            .build()
         val response = try {
             client.newCall(request).execute()
         } catch (e: IOException) {
@@ -117,7 +125,11 @@ class UpdateApi(
         val target = url.trim().toHttpUrlOrNull()
             ?: throw UpdateException(0, "invalid download url: ${redact(url)}")
         dest.parentFile?.mkdirs()
-        val request = Request.Builder().url(target).get().build()
+        val request = Request.Builder()
+            .url(target)
+            .header(ACCEPT_LANGUAGE_HEADER, acceptLanguage)
+            .get()
+            .build()
         val call = client.newCall(request)
         // 协程取消 → 取消 OkHttp 调用，避免阻塞读把取消拖到超时
         val handle = currentCoroutineContext().job.invokeOnCompletion { cause ->

@@ -1,6 +1,7 @@
 package dev.xiaoqiong.vkey.sync
 
 import dev.xiaoqiong.vkey.crypto.Crypto
+import dev.xiaoqiong.vkey.i18n.ACCEPT_LANGUAGE_ZH
 import dev.xiaoqiong.vkey.net.VkeyApi
 import dev.xiaoqiong.vkey.vault.DeviceConfig
 import kotlinx.coroutines.Dispatchers
@@ -73,6 +74,7 @@ object SyncManager {
      * @param masterKeyBase32 恢复码 / master_key 的 base32 形式（52 字符）
      * @param deviceName 设备名（超长会截断，空白会退化为 `android`）
      * @param existingSeedB64 已有种子（base64url）；复用可避免旧 token 失效
+     * @param acceptLanguage 请求头 `Accept-Language` 取值
      * @return 设备材料与本次确认的 master_key
      * @throws dev.xiaoqiong.vkey.net.ApiException 网络或服务端错误
      */
@@ -81,9 +83,10 @@ object SyncManager {
         masterKeyBase32: String,
         deviceName: String,
         existingSeedB64: String? = null,
+        acceptLanguage: String = ACCEPT_LANGUAGE_ZH,
     ): SyncResult {
         val masterKey = parseMasterKey(masterKeyBase32)
-        val api = VkeyApi(serverUrl)
+        val api = VkeyApi(serverUrl, acceptLanguage = acceptLanguage)
         val policy = api.policy()
         val username = policy.usernameHint.ifBlank { DEFAULT_USERNAME }
         val name = sanitizeDeviceName(deviceName)
@@ -120,6 +123,7 @@ object SyncManager {
      * @param code 配对码（容忍 `-`/空白/小写）
      * @param deviceName 设备名
      * @param existingSeedB64 已有种子（base64url）；复用可避免重复登记新设备
+     * @param acceptLanguage 请求头 `Accept-Language` 取值
      * @return 设备材料与解出的 master_key
      * @throws dev.xiaoqiong.vkey.net.ApiException 配对码不存在/已用/过期等
      * @throws IllegalArgumentException 配对码或 blob 非法
@@ -129,9 +133,10 @@ object SyncManager {
         code: String,
         deviceName: String,
         existingSeedB64: String? = null,
+        acceptLanguage: String = ACCEPT_LANGUAGE_ZH,
     ): SyncResult {
         val codeBytes = Crypto.parsePairCode(code)
-        val api = VkeyApi(serverUrl)
+        val api = VkeyApi(serverUrl, acceptLanguage = acceptLanguage)
         val policy = api.policy()
         val username = policy.usernameHint.ifBlank { DEFAULT_USERNAME }
         val name = sanitizeDeviceName(deviceName)
@@ -172,6 +177,7 @@ object SyncManager {
      * @param username 用户名（必须与管理员开户时绑定的用户名一致）
      * @param deviceName 设备名（超长截断，空白退化为 `android`）
      * @param existingSeedB64 已有 Ed25519 种子（base64url）；复用可避免重复登记新设备
+     * @param acceptLanguage 请求头 `Accept-Language` 取值
      * @return 设备材料与本地新生成的 master_key
      * @throws dev.xiaoqiong.vkey.net.ApiException 开户码无效/过期、用户名占用、设备配额满等
      * @throws IllegalArgumentException 开户码格式非法或用户名为空
@@ -182,12 +188,13 @@ object SyncManager {
         username: String,
         deviceName: String,
         existingSeedB64: String? = null,
+        acceptLanguage: String = ACCEPT_LANGUAGE_ZH,
     ): EnrollResult = withContext(Dispatchers.IO) {
         val canonical = Links.parseEnrollCode(code)
             ?: throw IllegalArgumentException("illegal enroll code format (expected ENROLL-XXXX-XXXX)")
         val account = username.trim()
         require(account.isNotEmpty()) { "username must not be blank" }
-        val api = VkeyApi(serverUrl)
+        val api = VkeyApi(serverUrl, acceptLanguage = acceptLanguage)
         val name = sanitizeDeviceName(deviceName)
         val seed = existingSeedB64?.let(::decodeSeed) ?: Crypto.random(Crypto.ED25519_SEED_LEN)
         val masterKey = Crypto.random(Crypto.KEY_LEN)
@@ -221,17 +228,22 @@ object SyncManager {
      *
      * @param config 本机设备材料（提供服务器地址、token、种子）
      * @param masterKeyBase32 本机 master_key（base32）
+     * @param acceptLanguage 请求头 `Accept-Language` 取值
      * @return 展示用配对码、code_id 与服务端过期时间
      * @throws dev.xiaoqiong.vkey.net.ApiException 未登录态/签名失败等
      */
-    fun generatePairCode(config: DeviceConfig, masterKeyBase32: String): GeneratedPairCode {
+    fun generatePairCode(
+        config: DeviceConfig,
+        masterKeyBase32: String,
+        acceptLanguage: String = ACCEPT_LANGUAGE_ZH,
+    ): GeneratedPairCode {
         val masterKey = parseMasterKey(masterKeyBase32)
         val code = Crypto.random(Crypto.PAIR_CODE_LEN)
         val codeId = newCodeId()
         val kek = Crypto.pairKek(code, codeId)
         val blob = Crypto.sealPairBlob(kek, masterKey, Crypto.random(Crypto.NONCE_LEN))
 
-        val api = authorizedApi(config)
+        val api = authorizedApi(config, acceptLanguage)
         val response = api.pairNew(codeId, code, blob)
         return GeneratedPairCode(
             codeText = Crypto.formatPairCode(code),
@@ -305,8 +317,8 @@ object SyncManager {
     private val CODE_ID_PATTERN = Regex("^[A-Za-z0-9._-]{1,64}$")
 
     /** 用已存设备材料构造带签名能力的客户端。 */
-    internal fun authorizedApi(config: DeviceConfig): VkeyApi {
-        val api = VkeyApi(config.server_url)
+    internal fun authorizedApi(config: DeviceConfig, acceptLanguage: String = ACCEPT_LANGUAGE_ZH): VkeyApi {
+        val api = VkeyApi(config.server_url, acceptLanguage = acceptLanguage)
         api.token = config.token
         api.deviceSeed = decodeSeed(config.seed)
         return api

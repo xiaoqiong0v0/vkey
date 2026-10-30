@@ -38,58 +38,58 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	mode, err := s.store.UserMode(r.Context())
 	if err != nil {
 		s.logErr("查询用户模式失败", err)
-		writeErr(w, http.StatusInternalServerError, "internal", "服务端内部错误")
+		writeError(w, r, http.StatusInternalServerError, "internal")
 		return
 	}
 	if mode != policy.UserModeAdmin {
-		writeErr(w, http.StatusForbidden, "enroll_disabled", "服务端未启用开户（single 模式）")
+		writeError(w, r, http.StatusForbidden, "enroll_disabled")
 		return
 	}
 
 	var req enrollRequest
 	if err := readJSON(w, r, &req); err != nil {
-		writeReadError(w, err)
+		writeReadError(w, r, err)
 		return
 	}
 	if store.NormalizeEnrollCode(req.Code) == "" {
-		writeErr(w, http.StatusBadRequest, "invalid_code", "code 不能为空")
+		writeError(w, r, http.StatusBadRequest, "invalid_code")
 		return
 	}
 	verifier, err := parseFixedB64("verifier", req.Verifier, crypto.KeyLen)
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid_verifier", err.Error())
+		writeError(w, r, http.StatusBadRequest, "invalid_verifier")
 		return
 	}
 	// username 可选：开户码已绑定时省略；长度校验与 /auth/token 同规则。
 	if req.Username != "" {
 		if err := validateText("username", req.Username, policy.MaxUsernameBytes); err != nil {
-			writeErr(w, http.StatusBadRequest, "invalid_username", err.Error())
+			writeError(w, r, http.StatusBadRequest, "invalid_username")
 			return
 		}
 	}
 	pubkey, err := parseFixedB64("device.pubkey", req.Device.PubKey, 32)
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid_pubkey", err.Error())
+		writeError(w, r, http.StatusBadRequest, "invalid_pubkey")
 		return
 	}
 	if err := validateText("device.name", req.Device.Name, policy.MaxDeviceNameBytes); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid_device", err.Error())
+		writeError(w, r, http.StatusBadRequest, "invalid_device")
 		return
 	}
 	if err := validateText("device.platform", req.Device.Platform, policy.MaxPlatformBytes); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid_device", err.Error())
+		writeError(w, r, http.StatusBadRequest, "invalid_device")
 		return
 	}
-	pwSalt, wrappedKey, code, msg := parsePasswordFields(req.PWSalt, req.WrappedKey)
+	pwSalt, wrappedKey, code := parsePasswordFields(req.PWSalt, req.WrappedKey)
 	if code != "" {
-		writeErr(w, http.StatusBadRequest, code, msg)
+		writeError(w, r, http.StatusBadRequest, code)
 		return
 	}
 
 	token, err := crypto.NewToken()
 	if err != nil {
 		s.logErr("生成 token 失败", err)
-		writeErr(w, http.StatusInternalServerError, "internal", "服务端内部错误")
+		writeError(w, r, http.StatusInternalServerError, "internal")
 		return
 	}
 	out, err := s.store.Enroll(r.Context(), store.EnrollInput{
@@ -107,20 +107,20 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case err == nil:
 	case errors.Is(err, store.ErrEnrollExpired):
-		writeErr(w, http.StatusGone, "code_expired", "开户码已过期")
+		writeError(w, r, http.StatusGone, "code_expired")
 		return
 	case errors.Is(err, store.ErrEnrollInvalid), errors.Is(err, store.ErrNotFound):
 		// 不存在/已用/已撤销/未绑定用户名统一答复，不区分细节。
-		writeErr(w, http.StatusBadRequest, "invalid_code", "开户码无效")
+		writeError(w, r, http.StatusBadRequest, "invalid_code")
 		return
 	case errors.Is(err, store.ErrExists):
-		writeErr(w, http.StatusConflict, "username_taken", "用户名已被占用")
+		writeError(w, r, http.StatusConflict, "username_taken")
 		return
-	case writeQuotaErr(w, err):
+	case writeQuotaErr(w, r, err):
 		return
 	default:
 		s.logErr("开户失败", err)
-		writeErr(w, http.StatusInternalServerError, "internal", "服务端内部错误")
+		writeError(w, r, http.StatusInternalServerError, "internal")
 		return
 	}
 
@@ -141,25 +141,24 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 //
 // 规则与 POST /auth/password 一致：pw_salt 16B、wrapped_key 为自包含布局且 ≤ 80B；
 // 两者要么都不给，要么都给出（只给其一视为非法）。
-// 返回：(pwSalt, wrappedKey, 错误码, 错误消息)；错误码为空表示通过。
-func parsePasswordFields(pwSaltB64, wrappedB64 string) ([]byte, []byte, string, string) {
+// 返回：(pwSalt, wrappedKey, 错误码)；错误码为空表示通过。
+func parsePasswordFields(pwSaltB64, wrappedB64 string) ([]byte, []byte, string) {
 	if pwSaltB64 == "" && wrappedB64 == "" {
-		return nil, nil, "", ""
+		return nil, nil, ""
 	}
 	if pwSaltB64 == "" || wrappedB64 == "" {
-		return nil, nil, "invalid_pw_fields", "pw_salt 与 wrapped_key 必须成对提供"
+		return nil, nil, "invalid_pw_fields"
 	}
 	pwSalt, err := parseFixedB64("pw_salt", pwSaltB64, crypto.PWSaltLen)
 	if err != nil {
-		return nil, nil, "invalid_pw_salt", err.Error()
+		return nil, nil, "invalid_pw_salt"
 	}
 	wrappedKey, err := crypto.ParseB64(wrappedB64)
 	if err != nil {
-		return nil, nil, "invalid_wrapped_key", "wrapped_key 不是合法的 base64url"
+		return nil, nil, "invalid_wrapped_key"
 	}
 	if len(wrappedKey) <= crypto.NonceLen+crypto.TagLen || len(wrappedKey) > policy.MaxWrappedKeyBytes {
-		return nil, nil, "invalid_wrapped_key",
-			"wrapped_key 必须是 nonce(12)||ct||tag 自包含布局，长度 ≤ 80 字节"
+		return nil, nil, "invalid_wrapped_key"
 	}
-	return pwSalt, wrappedKey, "", ""
+	return pwSalt, wrappedKey, ""
 }

@@ -2,6 +2,8 @@ package dev.xiaoqiong.vkey.net
 
 import android.util.Log
 import dev.xiaoqiong.vkey.crypto.Crypto
+import dev.xiaoqiong.vkey.i18n.ACCEPT_LANGUAGE_HEADER
+import dev.xiaoqiong.vkey.i18n.ACCEPT_LANGUAGE_ZH
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 import kotlinx.serialization.SerialName
@@ -182,6 +184,8 @@ class ApiException(
 class VkeyApi(
     baseUrl: String,
     client: OkHttpClient = defaultClient(),
+    /** 请求头 `Accept-Language` 取值（决定服务端错误文案语言）。 */
+    private val acceptLanguage: String = ACCEPT_LANGUAGE_ZH,
 ) {
 
     /** 服务基址（不含尾部斜杠）。 */
@@ -194,7 +198,16 @@ class VkeyApi(
     var deviceSeed: ByteArray? = null
 
     private val root: String = this.baseUrl.toString().trimEnd('/')
-    private val signingClient: OkHttpClient = client.newBuilder().addInterceptor(::signRequest).build()
+    private val signingClient: OkHttpClient = client.newBuilder()
+        // 所有请求（含免鉴权端点）都带语言信息；该头不参与签名。
+        .addInterceptor { chain ->
+            val localized = chain.request().newBuilder()
+                .header(ACCEPT_LANGUAGE_HEADER, acceptLanguage)
+                .build()
+            chain.proceed(localized)
+        }
+        .addInterceptor(::signRequest)
+        .build()
 
     // ------------------------------------------------------------------
     // 免鉴权端点

@@ -2,6 +2,7 @@ package dev.xiaoqiong.vkey.sync
 
 import android.util.Log
 import dev.xiaoqiong.vkey.crypto.Crypto
+import dev.xiaoqiong.vkey.i18n.ACCEPT_LANGUAGE_ZH
 import dev.xiaoqiong.vkey.net.ApiException
 import dev.xiaoqiong.vkey.net.ItemWrite
 import dev.xiaoqiong.vkey.net.SyncedItem
@@ -108,27 +109,36 @@ object ItemsSync {
      *
      * @param vault 当前库内容（必须已配置 [VaultData.device]）
      * @param now 本次同步的 unix 秒（测试可注入）
+     * @param acceptLanguage 请求头 `Accept-Language` 取值
      * @return 合并后的库内容与统计
      * @throws ApiException 网络或服务端错误（UI 直接展示 `code/message`）
      */
-    suspend fun sync(vault: VaultData, now: Long = nowSeconds()): SyncOutcome =
-        withContext(Dispatchers.IO) { syncBlocking(vault, now) }
+    suspend fun sync(
+        vault: VaultData,
+        now: Long = nowSeconds(),
+        acceptLanguage: String = ACCEPT_LANGUAGE_ZH,
+    ): SyncOutcome = withContext(Dispatchers.IO) { syncBlocking(vault, now, acceptLanguage) }
 
     /**
      * 同步一次（阻塞版本，调用方负责切 IO）。
      *
      * @param vault 当前库内容（必须已配置 [VaultData.device]）
      * @param now 本次同步的 unix 秒
+     * @param acceptLanguage 请求头 `Accept-Language` 取值
      * @return 合并后的库内容与统计
      * @throws ApiException 网络或服务端错误
      */
-    fun syncBlocking(vault: VaultData, now: Long = nowSeconds()): SyncOutcome {
+    fun syncBlocking(
+        vault: VaultData,
+        now: Long = nowSeconds(),
+        acceptLanguage: String = ACCEPT_LANGUAGE_ZH,
+    ): SyncOutcome {
         // 兼容旧 vault：先把历史误并入 items 的 webauthn 条目搬到独立列表
         val source = vault.withLegacyWebAuthnMigrated()
         val config = source.device
             ?: throw ApiException("not_configured", "sync is not configured on this device", 0)
         val masterKey = SyncManager.parseMasterKey(source.master_key)
-        val api = SyncManager.authorizedApi(config)
+        val api = SyncManager.authorizedApi(config, acceptLanguage)
 
         Log.d(TAG, "push start")
         val afterTotpPush = pushTotp(api, masterKey, source.items, now)

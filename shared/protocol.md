@@ -107,7 +107,9 @@ JSON 字段顺序与空白；服务端不解密，因此不校验明文结构。
 {"error": {"code": "machine_readable_code", "message": "人类可读说明"}}
 ```
 
-HTTP 状态码同时置为对应值。错误码清单：
+HTTP 状态码同时置为对应值。`message` 的语言由请求头 `Accept-Language` 决定
+（`zh*` → 中文，`en*` → 英文，**缺失/无法解析回落英文**）；`code` 与语言无关，
+客户端应基于 `code` 做本地文案映射。错误码清单：
 
 | HTTP | code | 含义 |
 |---|---|---|

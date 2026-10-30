@@ -473,3 +473,44 @@ vkeyd user add alice --db ./data/vkeyd.db --ttl 15m
 
 - 存于 meta 键 `enroll.ttl_seconds`（秒），未配置时回落 30 分钟
 - `/join` 落地页显示的有效期取自该码实际的 `created_at`/`expires_at`，与配置一致
+## 发版后的资产同步（GitHub 不可达时的常规路径）
+
+若部署机访问 GitHub 不稳定（国内 ECS 常见：`releases/latest/download/...` 直接超时），
+把更新源切成本机产物即可，客户端完全不受影响：
+
+```bash
+# 1) 本机下载 Release 资产（本机能连 GitHub 时）
+gh release download v0.4.0 -R <owner>/<repo> \
+  -p vkey-android.apk -p android.json -p SHA256SUMS -D ./dist
+
+# 2) 传到服务器产物目录
+scp ./dist/vkey-android.apk ./dist/android.json <user>@<host>:/tmp/
+ssh <user>@<host> 'mkdir -p ~/work/vkey/artifacts && \
+  mv /tmp/vkey-android.apk /tmp/android.json ~/work/vkey/artifacts/'
+
+# 3) 重建白名单（/dl/* 只放行 SHA256SUMS 里列出的文件名）
+ssh <user>@<host> 'cd ~/work/vkey/artifacts && \
+  printf "%s  vkey-android.apk\n%s  android.json\n" \
+    "$(sha256sum vkey-android.apk | cut -d" " -f1)" \
+    "$(sha256sum android.json | cut -d" " -f1)" > SHA256SUMS'
+
+# 4) 让 /api/v1/update/android 指向本地
+ssh <user>@<host> 'cd ~/work/vkey && ./bin/vkeyd policy set --db ./data/vkeyd.db \
+  --update-source=local \
+  --update-version-code=<新 versionCode> \
+  --update-version-name=<x.y.z> \
+  --update-sha256=<APK 的 sha256> \
+  --update-size=<APK 字节数> \
+  --update-auto-check=false'
+
+# 5) 自检
+curl -s https://<域名>/api/v1/update/android
+curl -sI https://<域名>/dl/vkey-android.apk | head -3
+```
+
+要点：
+
+- `/dl/*` 的白名单来自产物目录里的 `SHA256SUMS`，新文件必须同时写进去，否则 404
+- `--update-auto-check=false` 避免每次请求都去撞 GitHub 超时；网络恢复后可以改回 `true` 继续走惰性拉取
+- `sha256` 必须与 Release 资产一致（客户端下载后会校验，不一致会拒绝安装）
+- 两个源可随时互切：`--update-source=github|local`

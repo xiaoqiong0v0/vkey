@@ -24,8 +24,8 @@ android {
         applicationId = "dev.xiaoqiong.vkey"
         minSdk = 26
         targetSdk = 35
-        versionCode = 30100
-        versionName = "0.3.1"
+        versionCode = 40000
+        versionName = "0.4.0"
     }
 
     buildFeatures {

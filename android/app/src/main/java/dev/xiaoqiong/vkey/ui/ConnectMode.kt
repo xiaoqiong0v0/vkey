@@ -33,6 +33,8 @@ internal enum class ConnectMode {
 internal data class ConnectFormState(
     val mode: ConnectMode = DEFAULT_MODE,
     val masterKey: String = "",
+    /** master_key 登录时可选的自定义用户名（多用户实例用；空串表示用服务端提示值） */
+    val masterUsername: String = "",
     val pairCode: String = "",
     val enrollCode: String = "",
     val enrollUsername: String = "",

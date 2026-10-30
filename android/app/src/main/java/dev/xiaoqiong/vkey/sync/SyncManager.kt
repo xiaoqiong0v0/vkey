@@ -84,11 +84,15 @@ object SyncManager {
         deviceName: String,
         existingSeedB64: String? = null,
         acceptLanguage: String = ACCEPT_LANGUAGE_ZH,
+        usernameOverride: String? = null,
     ): SyncResult {
         val masterKey = parseMasterKey(masterKeyBase32)
         val api = VkeyApi(serverUrl, acceptLanguage = acceptLanguage)
         val policy = api.policy()
-        val username = policy.usernameHint.ifBlank { DEFAULT_USERNAME }
+        // 多用户实例（user_mode=admin）没法靠 username_hint 判断该登哪个账号：
+        // 调用方显式给的用户名优先，其次用服务端提示，最后回落 default。
+        val username = usernameOverride?.trim()?.takeIf { it.isNotEmpty() }
+            ?: policy.usernameHint.ifBlank { DEFAULT_USERNAME }
         val name = sanitizeDeviceName(deviceName)
         val seed = existingSeedB64?.let(::decodeSeed) ?: Crypto.random(Crypto.ED25519_SEED_LEN)
 

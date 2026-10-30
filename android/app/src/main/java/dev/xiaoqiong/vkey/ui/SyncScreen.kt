@@ -281,7 +281,14 @@ fun SyncScreen(
                 error = context.getString(R.string.err_master_key_format)
             else -> runTask(context.getString(R.string.busy_logging_in)) {
                 val result = withContext(Dispatchers.IO) {
-                    SyncManager.login(address, mk, deviceName, device?.seed, headerLanguage(context))
+                    SyncManager.login(
+                            address,
+                            mk,
+                            deviceName,
+                            device?.seed,
+                            headerLanguage(context),
+                            usernameOverride = form.masterUsername.trim().ifEmpty { null },
+                        )
                 }
                 onServerUrlChange(result.config.server_url)
                 // 落盘校验失败：保留输入、显式报错，不谎称「已登录」
@@ -826,15 +833,26 @@ fun SyncScreen(
                                                     )
                                                     Spacer(Modifier.height(8.dp))
                                                     when (form.mode) {
-                                                        ConnectMode.MASTER_KEY -> OutlinedTextField(
-                                                            value = form.masterKey,
-                                                            onValueChange = { form = form.copy(masterKey = it) },
-                                                            label = { Text("master_key") },
-                                                            singleLine = true,
-                                                            visualTransformation = PasswordVisualTransformation(),
-                                                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                                                            modifier = Modifier.fillMaxWidth(),
-                                                        )
+                                                        ConnectMode.MASTER_KEY -> Column {
+                                                            OutlinedTextField(
+                                                                value = form.masterUsername,
+                                                                onValueChange = { form = form.copy(masterUsername = it) },
+                                                                label = { Text(stringResource(R.string.label_username_optional)) },
+                                                                singleLine = true,
+                                                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
+                                                                modifier = Modifier.fillMaxWidth(),
+                                                            )
+                                                            Spacer(Modifier.height(8.dp))
+                                                            OutlinedTextField(
+                                                                value = form.masterKey,
+                                                                onValueChange = { form = form.copy(masterKey = it) },
+                                                                label = { Text("master_key") },
+                                                                singleLine = true,
+                                                                visualTransformation = PasswordVisualTransformation(),
+                                                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                                                                modifier = Modifier.fillMaxWidth(),
+                                                            )
+                                                        }
 
                                                         ConnectMode.PAIR -> OutlinedTextField(
                                                             value = form.pairCode,

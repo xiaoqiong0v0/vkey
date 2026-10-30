@@ -251,6 +251,7 @@
     <string name="err_code_expired">配对码已过期，请重新生成</string>
     <string name="err_invalid_code">配对码格式不对</string>
     <string name="err_invalid_token">设备凭证无效，请重新配对</string>
+    <string name="label_username_optional">用户名（可选，默认用服务端提示）</string>
     <string name="err_invalid_credentials">账号或恢复码不正确：请确认服务器地址与恢复码属于同一账号</string>
     <string name="err_invalid_verifier">身份校验值不正确，请重新输入</string>
     <string name="err_ts_skew">设备与服务端时间相差过大，请校准时间</string>

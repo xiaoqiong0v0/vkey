@@ -1,7 +1,7 @@
-# vkeyd 多用户测试用镜像（本地/CI 验证 admin 模式与配额）
+﻿# vkeyd 多用户测试用镜像（本地 / CI 验证 admin 模式与配额）
 # 构建上下文是仓库根：docker build -f server/deploy/Dockerfile .
 FROM golang:1.27-alpine AS build
-# 国内网络下走镜像代理；海外可覆盖为 direct
+# 国内网络走镜像代理；海外可覆盖为 direct
 ARG GOPROXY=https://goproxy.cn,direct
 ENV GOPROXY=${GOPROXY}
 WORKDIR /src
@@ -19,4 +19,6 @@ WORKDIR /data
 EXPOSE 3150
 VOLUME ["/data"]
 ENTRYPOINT ["/usr/local/bin/vkeyd"]
-CMD ["serve", "--db", "/data/vkeyd.db", "--listen", "0.0.0.0:3150", "--domain", "localhost"]
+# 不传 --domain：由请求的 Host / X-Forwarded-Proto 推导，
+# 这样在模拟器里通过 http://10.0.2.2:3150 访问时，落地页/二维码里才是正确地址。
+CMD ["serve", "--db", "/data/vkeyd.db", "--listen", "0.0.0.0:3150"]

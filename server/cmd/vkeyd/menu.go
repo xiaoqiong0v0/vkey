@@ -505,10 +505,49 @@ func (m *menu) userDelete() error {
 	})
 }
 
+// policySummary 打印当前策略值，附在策略子菜单顶部（先看再改）。
+func (m *menu) policySummary() {
+	_ = m.withStore(func(ctx context.Context, st *store.Store) error {
+		mode, err := st.UserMode(ctx)
+		if err != nil {
+			fmt.Fprintln(m.out, "当前：（读取失败）")
+			return nil
+		}
+		ttlSeconds, err := st.EnrollTTLSeconds(ctx)
+		if err != nil {
+			ttlSeconds = policy.EnrollTTLSeconds
+		}
+		quotas, err := st.Quotas(ctx)
+		if err != nil {
+			fmt.Fprintln(m.out, "当前：（读取配额失败）")
+			return nil
+		}
+		fmt.Fprintf(m.out, "当前：user_mode=%s  enroll_ttl=%s\n", mode,
+			formatDuration(ttlSeconds))
+		fmt.Fprintf(m.out, "      配额 items=%d  bytes=%d  devices=%d\n",
+			quotas.MaxItems, quotas.MaxBytes, quotas.MaxDevices)
+		info, err := st.UpdateInfo(ctx)
+		if err != nil || info == nil {
+			fmt.Fprintln(m.out, "      更新：（读取失败）")
+			return nil
+		}
+		if !info.Configured {
+			fmt.Fprintf(m.out, "      更新 未配置  source=%s  auto_check=%v  间隔=%s\n",
+				info.Source, info.AutoCheck, formatDuration(info.CheckInterval))
+			return nil
+		}
+		fmt.Fprintf(m.out, "      更新 source=%s  version=%s(%d)  auto_check=%v  间隔=%s\n",
+			info.Source, info.VersionName, info.VersionCode, info.AutoCheck,
+			formatDuration(info.CheckInterval))
+		return nil
+	})
+}
+
 // policyMenu 是策略设置子菜单；任一操作完成后返回主菜单。
 func (m *menu) policyMenu() error {
 	for {
 		fmt.Fprintf(m.out, "\n策略设置（db=%s）\n", m.dbPath)
+		m.policySummary()
 		fmt.Fprintln(m.out, "  1) user_mode（single|admin）")
 		fmt.Fprintln(m.out, "  2) 开户码有效期 enroll-ttl（如 30m）")
 		fmt.Fprintln(m.out, "  3) 强制主密码 require-master-pw（true|false）")

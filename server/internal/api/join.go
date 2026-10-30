@@ -191,6 +191,10 @@ func (s *Server) resolveJoin(w http.ResponseWriter, r *http.Request) (*joinView,
 	}
 	serverURL := s.serverURL(r)
 	deepLink := deepLinkEnrollPrefix + serverURL + "&code=" + url.QueryEscape(plain)
+	// 开户码已绑定用户名：把它一起带给 App，省去手填（老的 App 会忽略未知参数）
+	if rec.Username != "" {
+		deepLink += "&username=" + url.QueryEscape(rec.Username)
+	}
 	anchor := `<a class="btn main" href="` + htmlpkg.EscapeString(deepLink) + `">打开 vkey App</a>`
 	return &joinView{
 		Code:       plain,

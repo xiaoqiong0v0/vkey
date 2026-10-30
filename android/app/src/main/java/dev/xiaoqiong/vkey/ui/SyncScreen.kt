@@ -1599,6 +1599,8 @@ internal fun describeFailure(context: Context, t: Throwable): String {
             "code_expired" -> context.getString(R.string.err_code_expired)
             "invalid_code" -> context.getString(R.string.err_invalid_code)
             "invalid_token" -> context.getString(R.string.err_invalid_token)
+            "invalid_credentials" -> context.getString(R.string.err_invalid_credentials)
+            "invalid_verifier" -> context.getString(R.string.err_invalid_verifier)
             "ts_skew" -> context.getString(R.string.err_ts_skew)
             "empty_body", "invalid_response" -> context.getString(R.string.err_bad_response)
             "not_configured" -> context.getString(R.string.err_not_configured)

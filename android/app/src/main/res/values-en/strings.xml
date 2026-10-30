@@ -248,6 +248,8 @@
     <string name="err_code_used">Pairing code already used. Generate a new one</string>
     <string name="err_code_expired">Pairing code expired. Generate a new one</string>
     <string name="err_invalid_code">Malformed pairing code</string>
+    <string name="err_invalid_credentials">Incorrect account or recovery code. Check that the server address and the recovery code belong to the same account.</string>
+    <string name="err_invalid_verifier">The identity check value is incorrect. Please re-enter.</string>
     <string name="err_invalid_token">Device token invalid. Pair again</string>
     <string name="err_ts_skew">Device and server clocks differ too much. Adjust the time</string>
     <string name="err_bad_response">Unexpected server response (not a vkey server?)</string>

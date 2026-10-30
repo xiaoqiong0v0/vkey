@@ -396,6 +396,9 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
             pendingPairCode.value = null
             pendingEnroll.value = null
             pendingSyncServer.value = server
+            allowGuestUiForDeepLink()
+            topPageState.value = VkeyPage.SYNC
+            settingsTabState.value = SettingsTab.ACCOUNT
             Toast.makeText(this, getString(R.string.toast_server_set, server), Toast.LENGTH_LONG).show()
             return
         }
@@ -405,6 +408,9 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
             pendingPairCode.value = code
             pendingEnroll.value = null
             pendingSyncServer.value = settings.serverUrl
+            allowGuestUiForDeepLink()
+            topPageState.value = VkeyPage.SYNC
+            settingsTabState.value = SettingsTab.ACCOUNT
             Toast.makeText(this, getString(R.string.toast_pair_code_detected), Toast.LENGTH_LONG).show()
             return
         }
@@ -428,6 +434,8 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
             } else {
                 pendingPairCode.value = null
                 pendingSyncServer.value = null
+                // 未配置时也要能进设置页：否则首启二选一页会盖住它
+                allowGuestUiForDeepLink()
                 // 直接应用（不依赖组合副作用）；pendingEnroll 仍保留，组合层作兜底
                 applyEnrollLink(link, fromOnNewIntent = fromOnNewIntent)
                 pendingEnroll.value = link
@@ -445,6 +453,17 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
      * @param link 已校验的开户深链
      * @param fromOnNewIntent 是否来自 [onNewIntent]（仅用于日志取证）
      */
+    /**
+     * 深链进来但本机还没有 vault 时，先切到「访客态」界面。
+     *
+     * 不加这一步的话，首启二选一页会盖住设置页，用户点了链接却看不到配置页。
+     * 访客态不落盘、不生成密钥，接入成功后（[persistable] 校验通过）才真正建库。
+     */
+    private fun allowGuestUiForDeepLink() {
+        if (vault.value != null) return
+        onboardingSkippedThisRun.value = true
+        returnToSetupChoice.value = false
+    }
     private fun applyEnrollLink(link: EnrollDeepLink, fromOnNewIntent: Boolean) {
         settings.serverUrl = link.serverUrl
         syncPrefillState.value = ""

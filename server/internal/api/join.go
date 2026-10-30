@@ -26,6 +26,9 @@ import (
 const (
 	// deepLinkEnrollPrefix 是 App「开户」深链前缀：server=<服务器地址>&code=<开户码>。
 	deepLinkEnrollPrefix = "vkey://enroll?server="
+
+	// enrollAppPackage 是 Android 客户端包名，用于 intent:// 直达 App。
+	enrollAppPackage = "dev.xiaoqiong.vkey"
 	// joinPagePath 是开户落地页路径。
 	joinPagePath = "/join"
 	// joinQRPath 是开户二维码端点路径（页面 img 与下载链接共用）。
@@ -195,7 +198,12 @@ func (s *Server) resolveJoin(w http.ResponseWriter, r *http.Request) (*joinView,
 	if rec.Username != "" {
 		deepLink += "&username=" + url.QueryEscape(rec.Username)
 	}
-	anchor := `<a class="btn main" href="` + htmlpkg.EscapeString(deepLink) + `">打开 vkey App</a>`
+	// 浏览器（尤其 Chrome）对自定义 scheme 有限制：按钮用 intent:// 形式，
+	// 手机上没有 App 时回落到本页；二维码仍编码 vkey:// 原文（App 内扫码直接解析）。
+	query := strings.TrimPrefix(deepLink, "vkey://enroll?")
+	intentURL := "intent://enroll?" + query +
+		"#Intent;scheme=vkey;package=" + enrollAppPackage + ";end"
+	anchor := `<a class="btn main" href="` + htmlpkg.EscapeString(intentURL) + `">打开 vkey App</a>`
 	return &joinView{
 		Code:       plain,
 		QRURL:      joinQRPath + "?c=" + url.QueryEscape(plain),

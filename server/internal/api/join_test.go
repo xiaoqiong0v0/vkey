@@ -62,8 +62,9 @@ func TestJoinPageValidCode(t *testing.T) {
 	for _, want := range []string{
 		"<title>vkey 开户</title>",
 		`src="/join/qr.png?c=` + plain,
-		// href 中 & 由模板转义为 &amp;；vkey:// 自定义 scheme 不得被过滤成 #ZgotmplZ。
-		"vkey://enroll?server=https://vkey.test&amp;code=" + plain,
+		// 按钮用 intent://（Chrome 对自定义 scheme 有限制），失败回落本页。
+		"intent://enroll?server=https://vkey.test&amp;code=" + plain + "&amp;username=",
+		"#Intent;scheme=vkey;package=dev.xiaoqiong.vkey;end",
 		plain,   // 明文码供手抄
 		"30 分钟", // 按实际签发 TTL
 		"打开 vkey App",

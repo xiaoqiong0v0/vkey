@@ -14,7 +14,7 @@ vkey 的零知识同步服务端：只保存 verifier、设备公钥与**条目�
 ```
 server/
 ├── cmd/
-│   ├── vkeyd/          # 服务端 CLI（init / serve / policy set / update / user / purge）
+│   ├── vkeyd/          # 服务端 CLI（init / serve / policy set / update / user / purge / menu）
 │   └── genvectors/     # 重新生成 shared/vectors/*.json
 ├── internal/
 │   ├── api/            # 路由、鉴权中间件、handlers、页面、限流
@@ -105,6 +105,82 @@ go run ./cmd/vkeyd policy set --db ../.tmp/scratch/vkey.db --max-items-per-user=
 
 超限响应统一 `409` + `error.code ∈ {quota_items, quota_bytes, quota_devices}`；
 条目超限整批回滚。日志只记 user_id/username/结果码，绝不记 code/verifier/token。
+
+## 交互式控制台
+
+不想每次敲 `--db` 时，直接进菜单：
+
+```bash
+cd server
+go run ./cmd/vkeyd --db ../.tmp/scratch/vkey.db      # 无子命令 + 终端 → 自动进入
+go run ./cmd/vkeyd menu --db ../.tmp/scratch/vkey.db # 显式进入（等价）
+```
+
+- `--db` 缺省为 `./data/vkeyd.db`；进入后可用菜单项 `6` 改路径（本次会话生效）。
+- **stdin 不是终端**（管道 / CI）时不会进菜单，只打印 usage 并退出，不会卡住脚本：
+  `echo 0 | vkeyd --db x` 直接输出帮助。
+
+菜单是既有子命令的薄壳，读写行为与 `user` / `policy set` / `purge` 完全一致；退出码 0，
+错误打印在 stderr 后回到菜单。会话示例：
+
+```text
+$ vkeyd --db ./data/vkeyd.db
+
+vkeyd 控制台  db=./data/vkeyd.db
+  1) 概览
+  2) 用户管理
+  3) 策略设置
+  4) 更新信息
+  5) 维护
+  6) 修改数据库路径
+  0) 退出
+选择编号: 1
+数据库: ./data/vkeyd.db
+用户数: 2（停用 0）
+条目数: 42（墓碑 1）  设备数: 3
+user_mode: admin
+require_master_pw: false
+enroll_ttl: 30m0s
+配额: items=1000 bytes=20971520 devices=10（-1=不限制）
+更新: source=github repo=xiaoqiong0v0/vkey asset=vkey-android.apk
+      version_code=30101 version_name=0.3.2 configured=true
+      auto_check=true check_interval=86400s last_checked_at=0
+
+vkeyd 控制台  db=./data/vkeyd.db
+...
+选择编号: 3
+策略设置（db=./data/vkeyd.db）
+  1) user_mode（single|admin）
+  2) 开户码有效期 enroll-ttl（如 30m）
+  3) 强制主密码 require-master-pw（true|false）
+  4) 更新来源 update-source（github|local）
+  5) 惰性更新检查 update-auto-check（true|false）
+  6) 惰性检查间隔 update-check-interval（秒）
+  7) 每用户配额（items / bytes / devices）
+  0) 返回主菜单
+选择编号: 2
+enroll-ttl（Go duration，如 30m / 2h）: 2h
+enroll_ttl 已设置为 2h0m0s
+
+vkeyd 控制台  db=./data/vkeyd.db
+...
+选择编号: 0
+已退出
+```
+
+各菜单项：
+
+| 编号 | 内容 |
+|---|---|
+| 1 概览 | 用户数（含停用数）、条目数/墓碑数/设备数、`user_mode`、`require_master_pw`、`enroll_ttl`、配额、更新配置摘要 |
+| 2 用户管理 | 列表；开户（可设 `ttl`、`domain`，缺省取 `enroll_ttl`；**会打印一次性开户码**）；启用；停用（数据保留，设备立即 401）；删除（级联，先展示将删除的行数，输入 `yes`/`y` 才执行） |
+| 3 策略设置 | `user_mode`、`enroll-ttl`、`require-master-pw`、`update-source`、`update-auto-check`、`update-check-interval`、每用户配额 |
+| 4 更新信息 | 查看（`update show` 同口径）；写入 `version_code` + `sha256` + `version_name`（同时刷新发布时间） |
+| 5 维护 | purge：先 dry-run 列出墓碑，输入 `yes`/`y` 才物理删除；查看数据库所在目录大小 |
+| 6 修改数据库路径 | 回车保持不变，输入新路径后本次会话后续操作立即生效 |
+
+安全约束与 CLI 一致：不打印 `master_key`、token、verifier；危险操作（删用户、purge）
+必须二次确认，且默认先展示 dry-run 清单。非法编号或空行只提示，不退出。
 
 ## Android 更新信息（`GET /api/v1/update/android`）
 

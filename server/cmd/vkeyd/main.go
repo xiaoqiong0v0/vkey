@@ -18,8 +18,11 @@
 //	vkeyd user delete <username>|--id <id> --db <path> [--yes]
 //	vkeyd user revoke <code_id> --db <path>
 //	vkeyd purge  --db <path> [--dry-run | --yes]
+//	vkeyd --db <path>            # 无子命令且 stdin 是终端 → 交互式控制台
+//	vkeyd menu --db <path>       # 显式进入交互式控制台
 //
 // purge 无开关且在终端里执行时进入交互式勾选，选择要物理删除的墓碑。
+// 无子命令时若 stdin 不是终端，只打印 usage 并退出，避免脚本/CI 卡死。
 package main
 
 import (
@@ -61,6 +64,18 @@ func run(args []string) error {
 		usage(os.Stderr)
 		return errors.New("缺少子命令")
 	}
+	// `vkeyd help` 与 `vkeyd --help` 先处理，避免被当成菜单入口的未知开关。
+	switch args[0] {
+	case "help", "-h", "--help":
+		usage(os.Stdout)
+		return nil
+	case "menu":
+		return runMenuEntry(args[1:])
+	}
+	// `vkeyd --db <path>`：首个参数是开关且没有子命令 → 交互式控制台入口。
+	if strings.HasPrefix(args[0], "-") {
+		return runMenuEntry(args)
+	}
 	switch args[0] {
 	case "init":
 		return runInit(args[1:])
@@ -74,9 +89,6 @@ func run(args []string) error {
 		return runUser(args[1:])
 	case "purge":
 		return runPurge(args[1:])
-	case "help", "-h", "--help":
-		usage(os.Stdout)
-		return nil
 	default:
 		usage(os.Stderr)
 		return fmt.Errorf("未知子命令 %q", args[0])
@@ -512,15 +524,23 @@ func runUpdate(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("source=%s\nrepo=%s\nasset=%s\nversion_code=%d\nversion_name=%s\nsha256=%s\nsize=%d\nnotes=%s\npublished_at=%d\nconfigured=%t\nauto_check=%t\ncheck_interval=%d\nlast_checked_at=%d\nlast_check_error=%s\n",
-		info.Source, info.Repo, info.Asset, info.VersionCode, info.VersionName,
-		info.SHA256, info.Size, info.Notes, info.PublishedAt, info.Configured,
-		info.AutoCheck, info.CheckInterval, info.LastCheckedAt, info.LastCheckError)
-	fmt.Printf("enroll_ttl=%s\n", formatDuration(ttlSeconds))
+	printUpdateInfo(os.Stdout, info, ttlSeconds)
 	if !info.Configured {
 		fmt.Fprintln(os.Stderr, "vkeyd: 更新信息尚未配置完整（需要 version_code 与 sha256），GET /api/v1/update/android 返回 204")
 	}
 	return nil
+}
+
+// printUpdateInfo 按固定 key=value 顺序输出更新信息与开户码默认有效期。
+//
+// 参数：w 为输出目标（`update show` 用 stdout，交互式菜单用菜单输出）；
+// info 为更新信息；ttlSeconds 为开户码默认有效期（秒）。
+func printUpdateInfo(w io.Writer, info *store.UpdateInfo, ttlSeconds int64) {
+	fmt.Fprintf(w, "source=%s\nrepo=%s\nasset=%s\nversion_code=%d\nversion_name=%s\nsha256=%s\nsize=%d\nnotes=%s\npublished_at=%d\nconfigured=%t\nauto_check=%t\ncheck_interval=%d\nlast_checked_at=%d\nlast_check_error=%s\n",
+		info.Source, info.Repo, info.Asset, info.VersionCode, info.VersionName,
+		info.SHA256, info.Size, info.Notes, info.PublishedAt, info.Configured,
+		info.AutoCheck, info.CheckInterval, info.LastCheckedAt, info.LastCheckError)
+	fmt.Fprintf(w, "enroll_ttl=%s\n", formatDuration(ttlSeconds))
 }
 
 // parseQuotaValue 解析配额取值：整数（含 -1=不限制），
@@ -630,15 +650,20 @@ func runPurge(args []string) error {
 
 // purgeDeleteAll 直接物理删除全部墓碑（--yes）。
 func purgeDeleteAll(ctx context.Context, st *store.Store) error {
+	return purgeDeleteAllTo(ctx, st, os.Stdout)
+}
+
+// purgeDeleteAllTo 物理删除全部墓碑并把结果写到 w（交互式菜单复用）。
+func purgeDeleteAllTo(ctx context.Context, st *store.Store, w io.Writer) error {
 	n, err := st.Purge(ctx)
 	if err != nil {
 		return err
 	}
 	if n == 0 {
-		fmt.Printf("%s\n", msgNoTombstone)
+		fmt.Fprintf(w, "%s\n", msgNoTombstone)
 		return nil
 	}
-	fmt.Printf("已物理删除 %d 条墓碑\n", n)
+	fmt.Fprintf(w, "已物理删除 %d 条墓碑\n", n)
 	return nil
 }
 
@@ -646,26 +671,40 @@ func purgeDeleteAll(ctx context.Context, st *store.Store) error {
 //
 // 参数：hintNoTTY 为 true 时追加「没有终端、请用 --yes」的提示。
 func purgeDryRun(ctx context.Context, st *store.Store, w io.Writer, hintNoTTY bool) error {
-	targets, err := st.PurgePending(ctx)
+	n, err := purgeList(ctx, st, w)
 	if err != nil {
 		return err
 	}
-	if len(targets) == 0 {
+	if n == 0 {
 		fmt.Fprintf(w, "%s\n", msgNoTombstone)
 		return nil
+	}
+	if hintNoTTY {
+		fmt.Fprintf(w, "合计：%d 条\n", n)
+		fmt.Fprintf(w, "%s\n", msgPurgeNoTTY)
+		return nil
+	}
+	fmt.Fprintf(w, "合计：%d 条（加 --yes 执行删除）\n", n)
+	return nil
+}
+
+// purgeList 打印待物理删除的墓碑清单（不含合计行），返回条数。
+//
+// 交互式菜单复用：由调用方决定合计行文案与后续确认流程。
+func purgeList(ctx context.Context, st *store.Store, w io.Writer) (int, error) {
+	targets, err := st.PurgePending(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if len(targets) == 0 {
+		return 0, nil
 	}
 	fmt.Fprintf(w, "以下 %d 条墓碑将被物理删除（未写库）\n", len(targets))
 	for _, t := range targets {
 		fmt.Fprintf(w, "  user=%s id=%s kind=%s rp_id=%s deleted_at=%d version=%d\n",
 			shortID(t.UserID), shortID(t.ID), t.Kind, t.RPID, t.DeletedAt, t.Version)
 	}
-	if hintNoTTY {
-		fmt.Fprintf(w, "合计：%d 条\n", len(targets))
-		fmt.Fprintf(w, "%s\n", msgPurgeNoTTY)
-		return nil
-	}
-	fmt.Fprintf(w, "合计：%d 条（加 --yes 执行删除）\n", len(targets))
-	return nil
+	return len(targets), nil
 }
 
 // resolvePurgeMode 决定 purge 的执行模式。
@@ -719,6 +758,8 @@ func usage(w *os.File) {
   vkeyd user delete <username>|--id <id> --db <path> [--yes]
   vkeyd user revoke <code_id> --db <path>
   vkeyd purge  --db <path> [--dry-run | --yes]
+  vkeyd --db <path>            # 无子命令且 stdin 是终端 → 交互式控制台
+  vkeyd menu --db <path>       # 显式进入交互式控制台
 
 说明：
   init   建库并创建账号，stdout 只打印一次 master_key（base32 无填充）
@@ -745,8 +786,12 @@ func usage(w *os.File) {
   purge  物理删除已逻辑删除的条目（墓碑）；仅控制台执行，无 HTTP 接口
          无开关且在终端里 → 交互勾选（空格选择、回车确认、y 删除）
          无开关且没有终端 → 只列清单，提示加 --yes
-         加 --dry-run 只列清单；加 --yes 直接删除全部墓碑
-         远端服务器需 ssh -t 才有终端，否则会退化为只列清单
+          加 --dry-run 只列清单；加 --yes 直接删除全部墓碑
+          远端服务器需 ssh -t 才有终端，否则会退化为只列清单
+  menu   交互式控制台（概览 / 用户 / 策略 / 更新 / 维护）：
+         无子命令时带 --db 且 stdin 是终端即自动进入；--db 缺省
+         ./data/vkeyd.db，进入后可用菜单项 6 修改
+         stdin 不是终端（管道 / CI）时不进入，只打印本帮助
 
 退出码：0 成功；非 0 失败（错误信息输出到 stderr）。
 `)

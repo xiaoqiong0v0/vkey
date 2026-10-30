@@ -186,12 +186,10 @@
     <string name="info_connect_mode_switched">Switched to "%1$s"</string>
     <string name="section_login_master_key">Sign in with master_key</string>
     <string name="login_master_key_desc">Recovery code / master_key (52 characters). This device generates and stores its own device key.</string>
-    <string name="action_login_with_master_key">Finish setup with master_key</string>
     <string name="section_pair_with_code">Claim with a pairing code</string>
     <string name="pair_with_code_desc">On a signed-in device, generate a pairing code and enter the 52-character code here. After pairing, this device adopts the account master key (existing local entries are kept).</string>
     <string name="label_pair_code_input">Pairing code (spaces and dashes allowed)</string>
-    <string name="action_claim_and_configure">Claim and finish setup</string>
-    <string name="action_scan_input">Scan input</string>
+    <string name="action_connect_confirm">Confirm</string>
     <string name="label_device_name">Device name</string>
     <string name="dialog_disconnect_title">Unlink this device?</string>
     <string name="dialog_disconnect_text">Removes the device credentials and token from this account binding.\n\nKept: local entries (still viewable offline), master_key, server data, and other devices.\n\nYou can re-link later with a pairing code or master_key. To erase all local data, clear the app data instead.</string>
@@ -204,13 +202,15 @@
     <string name="busy_syncing_items">Syncing items…</string>
     <string name="info_sync_done">Sync complete</string>
     <string name="busy_generating_pair_code">Generating pairing code…</string>
-    <string name="info_pair_code_detected">Pairing code detected. Tap Claim and finish setup to continue</string>
+    <string name="info_pair_code_detected">Pairing code detected. Tap Confirm to continue</string>
     <!-- ============ Server address: compact row + edit dialog (connectivity probe before save) ============ -->
     <string name="server_address_label">Server</string>
+    <string name="label_server_address_field">Address</string>
     <string name="server_url_not_set">Not set</string>
     <string name="action_modify_address">Edit</string>
     <string name="busy_connecting_server">Connecting…</string>
     <string name="info_server_updated_relogin">Server updated. Sign in or pair again.</string>
+    <string name="info_server_url_detected">Server address scanned</string>
     <string name="err_server_unreachable_timeout">Cannot connect: timed out (5s)</string>
     <string name="err_server_unreachable_dns">Cannot connect: cannot resolve host</string>
     <string name="err_server_unreachable_status">Cannot connect: server returned HTTP %1$d</string>
@@ -224,7 +224,7 @@
     <string name="action_enroll">Connect</string>
     <string name="busy_enrolling">Connecting with enrollment code…</string>
     <string name="info_enrolled">Connected: %1$s</string>
-    <string name="info_enroll_code_detected">Enrollment code detected. Tap Connect to continue</string>
+    <string name="info_enroll_code_detected">Enrollment code detected. Tap Confirm to continue</string>
     <string name="err_enroll_code_format">Invalid enrollment code: expected ENROLL- prefix with two 4-character groups (case and spaces ignored)</string>
     <string name="err_enroll_username_empty">Enter the username (it must match the one the admin opened the account with)</string>
     <string name="dialog_enroll_overwrite_title">Connect a new account?</string>

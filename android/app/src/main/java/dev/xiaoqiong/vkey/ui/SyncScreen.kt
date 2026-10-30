@@ -37,6 +37,7 @@ import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MenuAnchorType
@@ -99,7 +100,7 @@ private enum class ConfirmKind { NONE, CLEAR_DEVICE, ENROLL }
  * （进程内有效，进程被杀后回到 [ACCOUNT]）。
  */
 enum class SettingsTab {
-    /** 账号：服务端地址行（两种状态都有）+ 未配置时的接入方式下拉框（只渲染当前方式的表单）/ 已配置时的状态卡、同步、配对、设备管理。 */
+    /** 账号：未配置时的接入方式下拉框（只渲染当前方式的表单，含共用「地址」字段）；已配置时的服务端地址行、状态卡、同步、配对、设备管理。 */
     ACCOUNT,
 
     /** 设置：本机设备名、回到前台时重新解锁、明暗模式、语言、导入 / 导出 2FA 配置。 */
@@ -124,12 +125,14 @@ enum class SettingsTab {
  *
  * 所有网络与密码学操作都在 IO 线程执行，结果通过 [onSaved] 落盘。
  *
- * 账号分类内「服务端地址」是一行紧凑条目（点击 / 「修改」进编辑对话框），两种状态都显示：
- * 保存前必须探测 `GET {url}/api/v1/policy`（5s / 2xx），失败不落盘；
- * 已配置且地址确实变了则清除本机设备绑定（token 属于旧服务器），本地条目与 master_key 保留。
+ * 账号分类按「是否已配置」切换两块内容：
  *
- * 未配置（`device == null`）时其下是「接入方式」下拉框（master_key / 配对码 / 开户码 三选一，
- * 只渲染当前方式的表单）；已配置时该块隐藏，解除绑定后随状态变化立即恢复。
+ * - 未配置（`device == null`）：「接入方式」下拉框（master_key / 配对码 / 开户码 三选一）+ 当前方式的表单。
+ *   表单顶部是共用的「地址」输入（右侧扫码图标扫服务端地址二维码填入），底部是「确认」——
+ *   master_key 只有一个占满宽度的「确认」，配对码 / 开户码还有各占一半的「扫码」（见 [supportsScanButton]）。
+ * - 已配置：「服务端地址」紧凑条目（点击 / 「修改」进编辑对话框）+ 状态卡、条目同步、配对、设备管理。
+ *   保存地址前必须探测 `GET {url}/api/v1/policy`（5s / 2xx），失败不落盘；
+ *   已配置且地址确实变了则清除本机设备绑定（token 属于旧服务器），本地条目与 master_key 保留。
  *
  * @param masterKey 当前库的 master_key（base32），用于生成配对码与校正账号密钥
  * @param device 已保存的设备材料；null 表示未配置
@@ -457,14 +460,21 @@ fun SyncScreen(
                 mode = scanMode,
                 onResult = null,
                 onConfigLink = { server ->
-                    // 扫码只填值、不落盘：地址必须在「保存」时探测连通性；
-                    // 从地址对话框进来的扫码回到对话框，从表单进来的直接打开对话框确认保存
-                    url = server
-                    addressDraft = server
-                    addressError = null
-                    scanForAddress = false
-                    showScan = false
-                    showAddressDialog = true
+                    // 扫码只填值、不落盘：
+                    // - 已配置态「修改」对话框里发起的扫码：回到对话框，保存时探测连通性；
+                    // - 未配置表单「地址」右侧的扫码：只合并进地址字段，点「确认」时才接入。
+                    if (scanForAddress) {
+                        url = server
+                        addressDraft = server
+                        addressError = null
+                        scanForAddress = false
+                        showScan = false
+                        showAddressDialog = true
+                    } else {
+                        url = mergeScannedAddress(url, server)
+                        showScan = false
+                        info = context.getString(R.string.info_server_url_detected)
+                    }
                 },
                 onPairCode = { code ->
                     form = form.withPairCode(code)
@@ -575,18 +585,18 @@ fun SyncScreen(
                             when (group) {
                                 // ---------------- 账号 ----------------
                                 SettingsTab.ACCOUNT -> {
-                                    // ---------- 服务端地址（两种状态都显示，点击进编辑对话框） ----------
-                                    ServerAddressRow(
-                                        url = url,
-                                        enabled = busy == null && !addressBusy,
-                                        onEdit = {
-                                            addressDraft = url.trim()
-                                            addressError = null
-                                            showAddressDialog = true
-                                        },
-                                    )
-
                                     if (device != null) {
+                                        // ---------- 已配置：服务端地址行（点击 / 「修改」进编辑对话框） ----------
+                                        ServerAddressRow(
+                                            url = url,
+                                            enabled = busy == null && !addressBusy,
+                                            onEdit = {
+                                                addressDraft = url.trim()
+                                                addressError = null
+                                                showAddressDialog = true
+                                            },
+                                        )
+
                                         // ---------- 已配置：状态卡 ----------
                                         Card(Modifier.fillMaxWidth()) {
                                             Column(Modifier.padding(16.dp)) {
@@ -789,17 +799,33 @@ fun SyncScreen(
                                                 }
                                             }
                                             // ---------- 当前方式的表单（一次只渲染一个） ----------
-                                            when (form.mode) {
-                                                ConnectMode.MASTER_KEY -> Card(Modifier.fillMaxWidth()) {
-                                                    Column(Modifier.padding(16.dp)) {
-                                                        Text(stringResource(R.string.section_login_master_key), style = MaterialTheme.typography.titleMedium)
-                                                        Text(
-                                                            stringResource(R.string.login_master_key_desc),
-                                                            style = MaterialTheme.typography.bodySmall,
-                                                            modifier = Modifier.padding(top = 4.dp),
-                                                        )
-                                                        Spacer(Modifier.height(8.dp))
-                                                        OutlinedTextField(
+                                            // 地址字段各方式共用（在方式专属字段上面）；底部按钮按方式决定
+                                            // 是否给「扫码」：只有 master_key 不支持扫码，其余两式各占一半。
+                                            Card(Modifier.fillMaxWidth()) {
+                                                Column(Modifier.padding(16.dp)) {
+                                                    Text(stringResource(form.mode.sectionTitleRes()), style = MaterialTheme.typography.titleMedium)
+                                                    Text(
+                                                        stringResource(form.mode.sectionDescRes()),
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        modifier = Modifier.padding(top = 4.dp),
+                                                    )
+                                                    Spacer(Modifier.height(8.dp))
+                                                    ServerAddressField(
+                                                        value = url,
+                                                        enabled = busy == null,
+                                                        onChange = {
+                                                            url = it
+                                                            error = null
+                                                        },
+                                                        onScan = {
+                                                            scanMode = ScanMode.CONFIG_LINK
+                                                            scanForAddress = false
+                                                            showScan = true
+                                                        },
+                                                    )
+                                                    Spacer(Modifier.height(8.dp))
+                                                    when (form.mode) {
+                                                        ConnectMode.MASTER_KEY -> OutlinedTextField(
                                                             value = form.masterKey,
                                                             onValueChange = { form = form.copy(masterKey = it) },
                                                             label = { Text("master_key") },
@@ -808,35 +834,8 @@ fun SyncScreen(
                                                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                                                             modifier = Modifier.fillMaxWidth(),
                                                         )
-                                                        Spacer(Modifier.height(8.dp))
-                                                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                                            Button(
-                                                                onClick = doLogin,
-                                                                enabled = busy == null,
-                                                                modifier = Modifier.weight(1f),
-                                                            ) { Text(stringResource(R.string.action_login_with_master_key)) }
-                                                            Button(
-                                                                onClick = {
-                                                                    scanMode = form.mode.scanMode()
-                                                                    showScan = true
-                                                                },
-                                                                enabled = busy == null,
-                                                                modifier = Modifier.weight(1f),
-                                                            ) { Text(stringResource(R.string.action_scan_input)) }
-                                                        }
-                                                    }
-                                                }
 
-                                                ConnectMode.PAIR -> Card(Modifier.fillMaxWidth()) {
-                                                    Column(Modifier.padding(16.dp)) {
-                                                        Text(stringResource(R.string.section_pair_with_code), style = MaterialTheme.typography.titleMedium)
-                                                        Text(
-                                                            stringResource(R.string.pair_with_code_desc),
-                                                            style = MaterialTheme.typography.bodySmall,
-                                                            modifier = Modifier.padding(top = 4.dp),
-                                                        )
-                                                        Spacer(Modifier.height(8.dp))
-                                                        OutlinedTextField(
+                                                        ConnectMode.PAIR -> OutlinedTextField(
                                                             value = form.pairCode,
                                                             onValueChange = { form = form.copy(pairCode = it) },
                                                             label = { Text(stringResource(R.string.label_pair_code_input)) },
@@ -844,66 +843,48 @@ fun SyncScreen(
                                                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
                                                             modifier = Modifier.fillMaxWidth(),
                                                         )
-                                                        Spacer(Modifier.height(8.dp))
-                                                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                                            Button(
-                                                                onClick = doPair,
-                                                                enabled = busy == null,
-                                                                modifier = Modifier.weight(1f),
-                                                            ) { Text(stringResource(R.string.action_claim_and_configure)) }
-                                                            Button(
-                                                                onClick = {
-                                                                    scanMode = form.mode.scanMode()
-                                                                    showScan = true
-                                                                },
-                                                                enabled = busy == null,
-                                                                modifier = Modifier.weight(1f),
-                                                            ) { Text(stringResource(R.string.action_scan_input)) }
+
+                                                        ConnectMode.ENROLL -> Column {
+                                                            OutlinedTextField(
+                                                                value = form.enrollCode,
+                                                                onValueChange = { form = form.copy(enrollCode = it) },
+                                                                label = { Text(stringResource(R.string.label_enroll_code)) },
+                                                                singleLine = true,
+                                                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
+                                                                modifier = Modifier.fillMaxWidth(),
+                                                            )
+                                                            Spacer(Modifier.height(8.dp))
+                                                            OutlinedTextField(
+                                                                value = form.enrollUsername,
+                                                                onValueChange = { form = form.copy(enrollUsername = it) },
+                                                                label = { Text(stringResource(R.string.label_enroll_username)) },
+                                                                singleLine = true,
+                                                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
+                                                                modifier = Modifier.fillMaxWidth(),
+                                                            )
                                                         }
                                                     }
-                                                }
-
-                                                ConnectMode.ENROLL -> Card(Modifier.fillMaxWidth()) {
-                                                    Column(Modifier.padding(16.dp)) {
-                                                        Text(stringResource(R.string.section_enroll), style = MaterialTheme.typography.titleMedium)
-                                                        Text(
-                                                            stringResource(R.string.enroll_desc),
-                                                            style = MaterialTheme.typography.bodySmall,
-                                                            modifier = Modifier.padding(top = 4.dp),
-                                                        )
-                                                        Spacer(Modifier.height(8.dp))
-                                                        OutlinedTextField(
-                                                            value = form.enrollCode,
-                                                            onValueChange = { form = form.copy(enrollCode = it) },
-                                                            label = { Text(stringResource(R.string.label_enroll_code)) },
-                                                            singleLine = true,
-                                                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
-                                                            modifier = Modifier.fillMaxWidth(),
-                                                        )
-                                                        Spacer(Modifier.height(8.dp))
-                                                        OutlinedTextField(
-                                                            value = form.enrollUsername,
-                                                            onValueChange = { form = form.copy(enrollUsername = it) },
-                                                            label = { Text(stringResource(R.string.label_enroll_username)) },
-                                                            singleLine = true,
-                                                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
-                                                            modifier = Modifier.fillMaxWidth(),
-                                                        )
-                                                        Spacer(Modifier.height(8.dp))
-                                                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                                            Button(
-                                                                onClick = doEnroll,
-                                                                enabled = busy == null,
-                                                                modifier = Modifier.weight(1f),
-                                                            ) { Text(stringResource(R.string.action_enroll)) }
+                                                    Spacer(Modifier.height(8.dp))
+                                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                                        Button(
+                                                            onClick = when (form.mode) {
+                                                                ConnectMode.MASTER_KEY -> doLogin
+                                                                ConnectMode.PAIR -> doPair
+                                                                ConnectMode.ENROLL -> doEnroll
+                                                            },
+                                                            enabled = busy == null,
+                                                            modifier = Modifier.weight(1f),
+                                                        ) { Text(stringResource(R.string.action_connect_confirm)) }
+                                                        if (supportsScanButton(form.mode)) {
                                                             Button(
                                                                 onClick = {
                                                                     scanMode = form.mode.scanMode()
+                                                                    scanForAddress = false
                                                                     showScan = true
                                                                 },
                                                                 enabled = busy == null,
                                                                 modifier = Modifier.weight(1f),
-                                                            ) { Text(stringResource(R.string.action_scan_input)) }
+                                                            ) { Text(stringResource(R.string.action_scan)) }
                                                         }
                                                     }
                                                 }
@@ -1170,6 +1151,28 @@ internal fun isValidServerUrl(raw: String): Boolean {
 }
 
 /**
+ * 接入方式 → 当前方式表单的标题文案。
+ *
+ * @param mode 当前选中的接入方式
+ */
+private fun ConnectMode.sectionTitleRes(): Int = when (this) {
+    ConnectMode.MASTER_KEY -> R.string.section_login_master_key
+    ConnectMode.PAIR -> R.string.section_pair_with_code
+    ConnectMode.ENROLL -> R.string.section_enroll
+}
+
+/**
+ * 接入方式 → 当前方式表单的说明文案。
+ *
+ * @param mode 当前选中的接入方式
+ */
+private fun ConnectMode.sectionDescRes(): Int = when (this) {
+    ConnectMode.MASTER_KEY -> R.string.login_master_key_desc
+    ConnectMode.PAIR -> R.string.pair_with_code_desc
+    ConnectMode.ENROLL -> R.string.enroll_desc
+}
+
+/**
  * 接入方式下拉框：收起时一行显示当前选择（标题 + 说明），展开后每项带一行短说明。
  *
  * @param mode 当前选中的接入方式
@@ -1216,6 +1219,47 @@ private fun ConnectModeDropdown(mode: ConnectMode, onSelect: (ConnectMode) -> Un
             }
         }
     }
+}
+
+/**
+ * 表单内的「地址」输入：单行服务端地址 + 右侧扫码图标（扫服务端地址二维码填入）。
+ *
+ * 只改输入值，不做连通性探测：未配置态的探测由随后的接入请求承担。
+ *
+ * @param value 当前地址
+ * @param enabled false 时不可编辑 / 不可扫码（其它任务进行中）
+ * @param onChange 输入变化回调
+ * @param onScan 点击扫码图标（进入 [ScanMode.CONFIG_LINK] 扫码）
+ */
+@Composable
+private fun ServerAddressField(
+    value: String,
+    enabled: Boolean,
+    onChange: (String) -> Unit,
+    onScan: () -> Unit,
+) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onChange,
+        label = { Text(stringResource(R.string.label_server_address_field)) },
+        placeholder = {
+            if (value.isEmpty()) {
+                Text(stringResource(R.string.placeholder_server_url))
+            }
+        },
+        singleLine = true,
+        enabled = enabled,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+        trailingIcon = {
+            IconButton(onClick = onScan, enabled = enabled) {
+                Icon(
+                    imageVector = qrScannerIcon,
+                    contentDescription = stringResource(R.string.action_scan),
+                )
+            }
+        },
+        modifier = Modifier.fillMaxWidth(),
+    )
 }
 
 /**

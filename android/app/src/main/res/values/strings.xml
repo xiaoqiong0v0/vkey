@@ -188,12 +188,10 @@
     <string name="info_connect_mode_switched">已切换到「%1$s」</string>
     <string name="section_login_master_key">用 master_key 登录</string>
     <string name="login_master_key_desc">恢复码 / master_key（52 位）。本机会生成并保存自己的设备密钥。</string>
-    <string name="action_login_with_master_key">用 master_key 完成配置</string>
     <string name="section_pair_with_code">用配对码领取</string>
     <string name="pair_with_code_desc">在已登录的设备上「生成配对码」，把 52 位配对码输入这里。配对成功后本机主密钥以账号为准（本机已有条目保留）。</string>
     <string name="label_pair_code_input">配对码（可含 - 与空格）</string>
-    <string name="action_claim_and_configure">领取并完成配置</string>
-    <string name="action_scan_input">扫码输入</string>
+    <string name="action_connect_confirm">确认</string>
     <string name="label_device_name">设备名</string>
     <string name="dialog_disconnect_title">解除与账号的绑定？</string>
     <string name="dialog_disconnect_text">解除本机与该账号的绑定：删除本机的设备凭证和 token。\n\n保留：本地条目（仍可离线查看）、master_key、服务端数据、其它设备。\n\n之后可以用配对码或 master_key 重新绑定；要彻底清空本机数据，请另行删除应用数据。</string>
@@ -206,13 +204,15 @@
     <string name="busy_syncing_items">正在同步条目…</string>
     <string name="info_sync_done">同步完成</string>
     <string name="busy_generating_pair_code">正在生成配对码…</string>
-    <string name="info_pair_code_detected">已识别配对码，点「领取并完成配置」继续</string>
+    <string name="info_pair_code_detected">已识别配对码，点「确认」继续</string>
     <!-- ============ 服务端地址：紧凑行 + 编辑对话框（保存前探测连通性） ============ -->
     <string name="server_address_label">服务器</string>
+    <string name="label_server_address_field">地址</string>
     <string name="server_url_not_set">未设置</string>
     <string name="action_modify_address">修改</string>
     <string name="busy_connecting_server">正在连接…</string>
     <string name="info_server_updated_relogin">服务器已更新，请重新登录或重新配对</string>
+    <string name="info_server_url_detected">已识别服务端地址</string>
     <string name="err_server_unreachable_timeout">无法连接：连接超时（5 秒）</string>
     <string name="err_server_unreachable_dns">无法连接：域名无法解析</string>
     <string name="err_server_unreachable_status">无法连接：服务器返回 HTTP %1$d</string>
@@ -226,7 +226,7 @@
     <string name="action_enroll">接入</string>
     <string name="busy_enrolling">正在用开户码接入…</string>
     <string name="info_enrolled">已接入账号：%1$s</string>
-    <string name="info_enroll_code_detected">已识别开户码，点「接入」继续</string>
+    <string name="info_enroll_code_detected">已识别开户码，点「确认」继续</string>
     <string name="err_enroll_code_format">开户码格式不对：应为 ENROLL- 前缀 + 4-4 位分组（大小写与空格不限）</string>
     <string name="err_enroll_username_empty">请输入用户名（必须与管理员开户时一致）</string>
     <string name="dialog_enroll_overwrite_title">接入新账号？</string>

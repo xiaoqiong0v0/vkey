@@ -111,10 +111,25 @@ internal fun ConnectMode.descRes(): Int = when (this) {
 /**
  * 接入方式 → 该方式表单内「扫码」使用的扫码语义：只解析该方式对应的码。
  *
- * master_key 没有专属二维码，因此沿用「服务端地址」语义（扫服务端 /pair 页的地址码）。
+ * master_key 没有专属二维码（[supportsScanButton] 为 false），这里返回的
+ * [ScanMode.CONFIG_LINK] 仅供「地址」字段右侧的扫码按钮使用。
  */
 internal fun ConnectMode.scanMode(): ScanMode = when (this) {
     ConnectMode.MASTER_KEY -> ScanMode.CONFIG_LINK
     ConnectMode.PAIR -> ScanMode.PAIR
     ConnectMode.ENROLL -> ScanMode.ENROLL
+}
+
+/**
+ * 接入方式 → 底部是否显示「扫码」按钮（纯函数）。
+ *
+ * master_key 没有专属二维码，底部只留一个占满宽度的「确认」；
+ * 配对码 / 开户码可以扫接入码，底部显示「确认」+「扫码」各占一半。
+ *
+ * @param mode 当前选中的接入方式
+ * @return true 表示显示「扫码」按钮
+ */
+internal fun supportsScanButton(mode: ConnectMode): Boolean = when (mode) {
+    ConnectMode.MASTER_KEY -> false
+    ConnectMode.PAIR, ConnectMode.ENROLL -> true
 }

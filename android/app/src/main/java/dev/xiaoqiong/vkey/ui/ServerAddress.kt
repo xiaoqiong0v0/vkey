@@ -101,6 +101,21 @@ internal fun probeFailureOf(t: Throwable): ServerProbe.Unreachable.Reason = when
 internal fun normalizeServerUrl(url: String): String = url.trim().trimEnd('/')
 
 /**
+ * 扫码得到的服务端地址与「地址」字段现值合并（纯函数）。
+ *
+ * 扫码结果非空（去空白后）则规范化后覆盖字段值 —— 扫码是用户的明确动作，
+ * 宁可覆盖手输值也不拼接；结果为空 / 只有空白（例如取消扫码）时保留原值。
+ *
+ * @param current 地址字段当前值
+ * @param scanned 扫码识别到的服务端地址；null 表示没有结果
+ * @return 合并后的地址字段值（已规范化）
+ */
+internal fun mergeScannedAddress(current: String, scanned: String?): String {
+    val next = normalizeServerUrl(scanned.orEmpty())
+    return next.ifEmpty { normalizeServerUrl(current) }
+}
+
+/**
  * 保存新地址后是否需要清除本机设备绑定（纯函数）。
  *
  * token 属于旧服务器：已配置且地址确实变了才需要重新登录 / 重新配对；

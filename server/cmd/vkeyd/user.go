@@ -23,6 +23,9 @@ import (
 //	vkeyd user delete  <username>|--id <id> [--db <path>] [--yes]
 //	vkeyd user revoke  <code_id> [--db <path>]
 //
+// 开户码有效期默认取 meta 键 enroll.ttl_seconds（未配置时回落
+// policy.EnrollTTLSeconds）；显式给出 --ttl 时以命令行为准。
+//
 // 约定：stdout 只输出结果行（key=value，便于脚本解析），提示一律走 stderr；
 // 开户码明文只在 `user add` 的 stdout 出现一次，不进日志。
 
@@ -115,7 +118,7 @@ func validateCLIUsername(username string) error {
 func runUserAdd(args []string) error {
 	fs := newUserFlagSet("user add")
 	dbPath := fs.String("db", "", "sqlite 数据库路径（必填）")
-	ttl := fs.Duration("ttl", time.Duration(policy.EnrollTTLSeconds)*time.Second, "开户码有效期（Go duration，默认 30m）")
+	ttl := fs.Duration("ttl", 0, "开户码有效期（Go duration；缺省取 enroll.ttl_seconds，未配置时 30m）")
 	domain := fs.String("domain", "", "对外域名（生成开户链接用，与 `serve --domain` 同源；缺省输出相对路径）")
 	flagArgs, positional := splitUserArgs(args, map[string]bool{"db": true, "ttl": true, "domain": true})
 	if err := fs.Parse(flagArgs); err != nil {
@@ -128,7 +131,14 @@ func runUserAdd(args []string) error {
 	if err := validateCLIUsername(username); err != nil {
 		return fmt.Errorf("user add: %w", err)
 	}
-	if *ttl <= 0 {
+	// 显式给出 --ttl 时以命令行为准；未给出则取服务端配置。
+	ttlSet := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "ttl" {
+			ttlSet = true
+		}
+	})
+	if ttlSet && *ttl <= 0 {
 		return errors.New("user add: --ttl 必须为正数")
 	}
 
@@ -139,10 +149,28 @@ func runUserAdd(args []string) error {
 	defer func() { _ = st.Close() }()
 
 	ctx := context.Background()
-	if err := userAddRun(ctx, st, username, *domain, *ttl, time.Now(), os.Stdout, os.Stderr); err != nil {
+	effectiveTTL, err := resolveEnrollTTL(ctx, st, *ttl, ttlSet)
+	if err != nil {
+		return err
+	}
+	if err := userAddRun(ctx, st, username, *domain, effectiveTTL, time.Now(), os.Stdout, os.Stderr); err != nil {
 		return err
 	}
 	return nil
+}
+
+// resolveEnrollTTL 决定本次签发的开户码有效期。
+//
+// 优先级：显式 --ttl > meta 键 enroll.ttl_seconds > policy.EnrollTTLSeconds。
+func resolveEnrollTTL(ctx context.Context, st *store.Store, ttl time.Duration, explicit bool) (time.Duration, error) {
+	if explicit {
+		return ttl, nil
+	}
+	secs, err := st.EnrollTTLSeconds(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("user add: 读取开户码默认有效期失败: %w", err)
+	}
+	return time.Duration(secs) * time.Second, nil
 }
 
 // userAddRun 执行开户码签发并写出结果（out 为 stdout 形态，hint 为 stderr 提示）。

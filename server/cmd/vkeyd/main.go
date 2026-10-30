@@ -6,6 +6,7 @@
 //	vkeyd serve  --db <path> --listen :8080 [--domain <域名>] [--artifacts-dir <dir>] [--set-require-master-pw=true|false]
 //	vkeyd policy set --db <path> [--require-master-pw=<bool>] [--user-mode=single|admin]
 //	                           [--max-items-per-user=<n>] [--max-bytes-per-user=<n|20MiB>] [--max-devices-per-user=<n>]
+//	                           [--enroll-ttl=<Go duration，如 30m>]
 //	                           [--update-source=github|local] [--update-repo=<owner/repo>] [--update-asset=<file>]
 //	                           [--update-version-code=<n>] [--update-version-name=<x.y.z>]
 //	                           [--update-sha256=<hex>] [--update-size=<n>] [--update-notes=<text>]
@@ -225,12 +226,13 @@ func runServe(args []string) error {
 	}
 }
 
-// runPolicy 处理 `policy set` 子命令：可修改主密码策略、用户模式、每用户配额与 Android 更新信息。
+// runPolicy 处理 `policy set` 子命令：可修改主密码策略、用户模式、每用户配额、
+// 开户码默认有效期与 Android 更新信息。
 //
 // 至少给出一个策略开关；各项相互独立，未给出的保持不变。
 func runPolicy(args []string) error {
 	if len(args) == 0 || args[0] != "set" {
-		return errors.New("policy: 用法 `vkeyd policy set --db <path> [--require-master-pw=<bool>] [--user-mode=single|admin] [--max-items-per-user=<n>] [--max-bytes-per-user=<n>] [--max-devices-per-user=<n>] [--update-source=github|local] [--update-repo=<owner/repo>] [--update-asset=<file>] [--update-version-code=<n>] [--update-version-name=<x.y.z>]         [--update-sha256=<hex>] [--update-size=<n>] [--update-notes=<text>] [--update-auto-check=<bool>] [--update-check-interval=<seconds>]`")
+		return errors.New("policy: 用法 `vkeyd policy set --db <path> [--require-master-pw=<bool>] [--user-mode=single|admin] [--max-items-per-user=<n>] [--max-bytes-per-user=<n>] [--max-devices-per-user=<n>] [--enroll-ttl=<duration>] [--update-source=github|local] [--update-repo=<owner/repo>] [--update-asset=<file>] [--update-version-code=<n>] [--update-version-name=<x.y.z>]         [--update-sha256=<hex>] [--update-size=<n>] [--update-notes=<text>] [--update-auto-check=<bool>] [--update-check-interval=<seconds>]`")
 	}
 	fs := flag.NewFlagSet("policy set", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -240,6 +242,7 @@ func runPolicy(args []string) error {
 	maxItems := fs.String("max-items-per-user", "", "每用户条目数配额；-1 表示不限制（可选）")
 	maxBytes := fs.String("max-bytes-per-user", "", "每用户密文字节配额；支持 20MiB/K/M/G 后缀，-1 不限制（可选）")
 	maxDevices := fs.String("max-devices-per-user", "", "每用户设备数配额；-1 表示不限制（可选）")
+	enrollTTL := fs.String("enroll-ttl", "", "开户码默认有效期（Go duration，如 30m；必须为正，可选）")
 	var upd updateFlagValues
 	fs.StringVar(&upd.Source, "update-source", "", "Android 更新来源：github|local（可选）")
 	fs.StringVar(&upd.Repo, "update-repo", "", "GitHub 仓库 owner/repo（可选）")
@@ -257,8 +260,13 @@ func runPolicy(args []string) error {
 	if *dbPath == "" {
 		return errors.New("policy set: 缺少 --db")
 	}
-	if *require == "" && *userMode == "" && *maxItems == "" && *maxBytes == "" && *maxDevices == "" && upd.empty() {
+	if *require == "" && *userMode == "" && *maxItems == "" && *maxBytes == "" && *maxDevices == "" &&
+		*enrollTTL == "" && upd.empty() {
 		return errors.New("policy set: 至少给出一个策略开关")
+	}
+	enrollTTLSeconds, err := parseEnrollTTL(*enrollTTL)
+	if err != nil {
+		return err
 	}
 
 	st, err := store.Open(*dbPath)
@@ -308,7 +316,36 @@ func runPolicy(args []string) error {
 		}
 		fmt.Fprintf(os.Stderr, "vkeyd: %s 已设置为 %d\n", q.name, v)
 	}
+	if *enrollTTL != "" {
+		if err := st.SetEnrollTTLSeconds(ctx, enrollTTLSeconds); err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "vkeyd: enroll_ttl 已设置为 %s\n", formatDuration(enrollTTLSeconds))
+	}
 	return applyUpdateFlags(ctx, st, upd)
+}
+
+// parseEnrollTTL 校验 `--enroll-ttl` 取值并折算为秒。
+//
+// 参数：raw 为空串表示未给出，返回 0。
+// 返回：不小于 1 秒的正整数秒；非 duration 或不足 1 秒时报错。
+func parseEnrollTTL(raw string) (int64, error) {
+	if raw == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("policy set: --enroll-ttl 必须是 Go duration（如 30m），实际 %q", raw)
+	}
+	if d < time.Second {
+		return 0, errors.New("policy set: --enroll-ttl 必须是不小于 1s 的正 duration")
+	}
+	return int64(d / time.Second), nil
+}
+
+// formatDuration 把秒数格式化为 Go duration 文本（如 30m0s、2h0m0s）。
+func formatDuration(seconds int64) string {
+	return (time.Duration(seconds) * time.Second).String()
 }
 
 // updateFlagValues 收集 `policy set` 的更新信息开关（空串表示未给出）。
@@ -446,7 +483,8 @@ func validArtifactFileName(name string) bool {
 
 // runUpdate 处理 `update show` 子命令：打印当前 Android 更新信息配置。
 //
-// stdout 为固定的 key=value 行（便于脚本解析），提示信息走 stderr。
+// stdout 为固定的 key=value 行（便于脚本解析），提示信息走 stderr；
+// 末行 enroll_ttl 是开户码当前生效的默认有效期（未配置时为编译期默认 30m）。
 func runUpdate(args []string) error {
 	if len(args) == 0 || args[0] != "show" {
 		return errors.New("update: 用法 `vkeyd update show --db <path>`")
@@ -470,10 +508,15 @@ func runUpdate(args []string) error {
 	if err != nil {
 		return err
 	}
+	ttlSeconds, err := st.EnrollTTLSeconds(context.Background())
+	if err != nil {
+		return err
+	}
 	fmt.Printf("source=%s\nrepo=%s\nasset=%s\nversion_code=%d\nversion_name=%s\nsha256=%s\nsize=%d\nnotes=%s\npublished_at=%d\nconfigured=%t\nauto_check=%t\ncheck_interval=%d\nlast_checked_at=%d\nlast_check_error=%s\n",
 		info.Source, info.Repo, info.Asset, info.VersionCode, info.VersionName,
 		info.SHA256, info.Size, info.Notes, info.PublishedAt, info.Configured,
 		info.AutoCheck, info.CheckInterval, info.LastCheckedAt, info.LastCheckError)
+	fmt.Printf("enroll_ttl=%s\n", formatDuration(ttlSeconds))
 	if !info.Configured {
 		fmt.Fprintln(os.Stderr, "vkeyd: 更新信息尚未配置完整（需要 version_code 与 sha256），GET /api/v1/update/android 返回 204")
 	}
@@ -664,6 +707,7 @@ func usage(w *os.File) {
   vkeyd serve  --db <path> --listen :8080 [--domain <域名>] [--artifacts-dir <dir>] [--set-require-master-pw=true|false]
   vkeyd policy set --db <path> [--require-master-pw=<bool>] [--user-mode=single|admin]
                              [--max-items-per-user=<n>] [--max-bytes-per-user=<n|20MiB>] [--max-devices-per-user=<n>]
+                             [--enroll-ttl=<Go duration，如 30m>]
                              [--update-source=github|local] [--update-repo=<owner/repo>] [--update-asset=<file>]
                              [--update-version-code=<n>] [--update-version-name=<x.y.z>]
                              [--update-sha256=<hex>] [--update-size=<n>] [--update-notes=<text>]
@@ -679,15 +723,18 @@ func usage(w *os.File) {
 说明：
   init   建库并创建账号，stdout 只打印一次 master_key（base32 无填充）
   serve  启动 HTTP 服务；TLS 由 nginx 终止
-  policy 修改服务端策略（主密码、用户模式、每用户配额；-1 表示不限制）
-         亦用于配置 Android 更新信息（--update-*，只写库、不访问网络）；
-         写入 --update-version-code 或 --update-sha256 时同时刷新发布时间；
-         --update-auto-check / --update-check-interval 控制服务端在请求到达时
-         按 TTL 拉取 Release 资产 android.json（缺省 true / 86400 秒）
+  policy 修改服务端策略（主密码、用户模式、每用户配额、开户码默认有效期；
+          -1 表示不限制）
+          亦用于配置 Android 更新信息（--update-*，只写库、不访问网络）；
+          写入 --update-version-code 或 --update-sha256 时同时刷新发布时间；
+          --update-auto-check / --update-check-interval 控制服务端在请求到达时
+          按 TTL 拉取 Release 资产 android.json（缺省 true / 86400 秒）
   update 查看 Android 更新信息配置（show）：stdout 为 key=value 行，
+         末行 enroll_ttl 为开户码默认有效期；
          configured=false 时 GET /api/v1/update/android 返回 204
   user   多用户运维（仅 user_mode=admin 生效）：
-         add     签发一次性开户码（默认 30 分钟、单次使用），stdout 为
+         add     签发一次性开户码（默认取 enroll_ttl，未配置 30 分钟、单次使用），
+                  显式 --ttl 覆盖该默认值；stdout 为
                   username=/code=/code_id=/expires_at=/join_url= 五行，便于脚本解析；
                   --domain 指定对外域名时 join_url 为完整链接（可直接发给对方），
                   否则为相对路径并提示补全；single 模式下直接拒绝

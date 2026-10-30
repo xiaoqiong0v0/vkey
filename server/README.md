@@ -45,6 +45,9 @@ go run ./cmd/vkeyd policy set --db ../.tmp/scratch/vkey.db --require-master-pw=t
 go run ./cmd/vkeyd policy set --db ../.tmp/scratch/vkey.db --user-mode=admin --max-items-per-user=2000
 go run ./cmd/vkeyd policy set --db ../.tmp/scratch/vkey.db --max-bytes-per-user=50MiB --max-devices-per-user=20
 
+# 开户码默认有效期（缺省 30 分钟；`user add --ttl` 可按次覆盖）
+go run ./cmd/vkeyd policy set --db ../.tmp/scratch/vkey.db --enroll-ttl=2h
+
 # 清理墓碑（终端里不带开关 = 交互式勾选：空格选择、回车列出、y 删除）
 go run ./cmd/vkeyd purge --db ../.tmp/scratch/vkey.db
 
@@ -72,7 +75,7 @@ go run ./cmd/vkeyd purge --db ../.tmp/scratch/vkey.db --yes
 # 1) 切换到 admin 模式
 go run ./cmd/vkeyd policy set --db ../.tmp/scratch/vkey.db --user-mode=admin
 
-# 2) 开户：签发一次性开户码（默认 30 分钟；stdout 为固定 key=value 五行）
+# 2) 开户：签发一次性开户码（有效期默认取 enroll.ttl_seconds，未配置为 30 分钟；stdout 为固定 key=value 五行）
 go run ./cmd/vkeyd user add alice --db ../.tmp/scratch/vkey.db --domain vkey.example.com
 #   username=alice
 #   code=ENROLL-XXXX-XXXX
@@ -379,3 +382,18 @@ vkeyd update show --db ./data/vkeyd.db
 - 成功才覆盖缓存；失败保留旧值并记 `last_check_error`，接口仍返回 200/204
 - 同一时刻只允许一次拉取，并发请求用缓存返回
 - `android.json` 由 Release 工作流自动生成并上传（含 `version_code`/`sha256`/`size`）
+### 开户码默认有效期
+
+```bash
+# 设置默认有效期（Go duration，必须为正）
+vkeyd policy set --db ./data/vkeyd.db --enroll-ttl=2h
+
+# 查看当前值（末行 enroll_ttl=）
+vkeyd update show --db ./data/vkeyd.db
+
+# 单次覆盖（优先级：--ttl > enroll.ttl_seconds > 30 分钟）
+vkeyd user add alice --db ./data/vkeyd.db --ttl 15m
+```
+
+- 存于 meta 键 `enroll.ttl_seconds`（秒），未配置时回落 30 分钟
+- `/join` 落地页显示的有效期取自该码实际的 `created_at`/`expires_at`，与配置一致

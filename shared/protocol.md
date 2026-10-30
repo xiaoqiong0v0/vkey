@@ -691,6 +691,7 @@ vkeyd policy set --db <path> --require-master-pw=<bool>
 - `serve`：HTTP 服务。`--set-require-master-pw` 未给出时不修改策略；
   给出时在启动前写入并立即生效。
 - `policy set`：修改 `users.require_master_pw`。
+- 开户码默认有效期可由服务端配置：`vkeyd policy set --enroll-ttl=<duration>`（meta 键 `enroll.ttl_seconds`，未配置 30 分钟）；`vkeyd user add --ttl` 可按次覆盖。
 - 退出码：0 成功；非 0 失败（错误写 stderr）。
 
 ---

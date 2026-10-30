@@ -20,6 +20,8 @@ const (
 	MetaKeyMaxBytesPerUser = "quota.max_bytes_per_user"
 	// MetaKeyMaxDevicesPerUser 是每用户设备数配额（十进制整数字符串）。
 	MetaKeyMaxDevicesPerUser = "quota.max_devices_per_user"
+	// MetaKeyEnrollTTLSeconds 是开户码默认有效期（秒，十进制整数字符串）。
+	MetaKeyEnrollTTLSeconds = "enroll.ttl_seconds"
 )
 
 // SetMeta 写入/覆盖一个 meta 键（供 CLI 配置用户模式与配额）。
@@ -98,6 +100,28 @@ func (s *Store) metaGetInt(ctx context.Context, key string, def int64) (int64, e
 		return def, nil // 值损坏时按默认值处理，不让存储层卡死
 	}
 	return n, nil
+}
+
+// EnrollTTLSeconds 返回开户码默认有效期（秒）。
+//
+// 缺省、值损坏或非正数时回落 policy.EnrollTTLSeconds。
+func (s *Store) EnrollTTLSeconds(ctx context.Context) (int64, error) {
+	secs, err := s.metaGetInt(ctx, MetaKeyEnrollTTLSeconds, policy.EnrollTTLSeconds)
+	if err != nil {
+		return policy.EnrollTTLSeconds, err
+	}
+	if secs <= 0 {
+		return policy.EnrollTTLSeconds, nil
+	}
+	return secs, nil
+}
+
+// SetEnrollTTLSeconds 写入开户码默认有效期（秒）；必须为正。
+func (s *Store) SetEnrollTTLSeconds(ctx context.Context, seconds int64) error {
+	if seconds <= 0 {
+		return fmt.Errorf("store: 开户码有效期必须为正数，实际 %d", seconds)
+	}
+	return s.SetMeta(ctx, MetaKeyEnrollTTLSeconds, strconv.FormatInt(seconds, 10))
 }
 
 // SetUserDisabled 停用/启用账号：disabledAt>0 记录停用时刻，0 恢复启用。
